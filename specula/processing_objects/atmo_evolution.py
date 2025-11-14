@@ -39,12 +39,17 @@ class AtmoEvolution(BaseProcessingObj):
         self.zenithAngleInDeg = self.simul_params.zenithAngleInDeg
 
         self.n_phasescreens = len(heights)
-        self.last_position = np.zeros(self.n_phasescreens)
+        self.last_position = np.zeros(self.n_phasescreens, dtype=self.dtype)
+        self.last_effective_position = cpuArray(np.zeros(self.n_phasescreens, dtype=self.dtype))
         self.last_t = 0
         self.cycle_screens = True
         self.delta_time = None
-        self.extra_delta_time = extra_delta_time
-    
+
+        if not hasattr(extra_delta_time,"__len__"):
+            self.extra_delta_time = cpuArray(self.n_phasescreens*[extra_delta_time])
+        else:
+            self.extra_delta_time = cpuArray(extra_delta_time)
+
         self.inputs['seeing'] = InputValue(type=BaseValue)
         self.inputs['wind_speed'] = InputValue(type=BaseValue)
         self.inputs['wind_direction'] = InputValue(type=BaseValue)
@@ -57,16 +62,21 @@ class AtmoEvolution(BaseProcessingObj):
             self.airmass = 1.0
 
         heights = np.array(heights, dtype=self.dtype)
-        self.pupil_distances = heights * self.airmass  # distances from the pupil accounting for zenith angle
+        # distances from the pupil accounting for zenith angle
+        self.pupil_distances = heights * self.airmass
 
         fov_rad = fov * ASEC2RAD
         self.pixel_layer = np.ceil(
-            (self.pixel_pupil + 2 * np.sqrt(np.sum(np.array(pupil_position, dtype=self.dtype) * 2)) / self.pixel_pitch +
-                               abs(self.pupil_distances) / self.pixel_pitch * fov_rad) / 2.0
+            (self.pixel_pupil \
+                + 2 * np.sqrt(np.sum(np.array(pupil_position, dtype=self.dtype) * 2)) \
+                / self.pixel_pitch \
+                + abs(self.pupil_distances) / self.pixel_pitch * fov_rad) / 2.0
         ) * 2.0
 
         if fov_in_m is not None:
-            self.pixel_layer = np.full_like(heights, int(fov_in_m / self.pixel_pitch / 2.0) * 2)
+            self.pixel_layer = np.full_like(
+                heights, int(fov_in_m / self.pixel_pitch / 2.0) * 2
+            )
 
         self.L0 = L0
         self.Cn2 = np.array(Cn2, dtype=self.dtype)
@@ -77,20 +87,23 @@ class AtmoEvolution(BaseProcessingObj):
 
         # Error if phase-screens dimension is smaller than maximum layer dimension
         if self.pixel_square_phasescreens < max(self.pixel_layer):
-            raise ValueError('Error: phase-screens dimension must be greater than layer dimension!')
+            raise ValueError('Error: phase-screens dimension must be'
+                             'greater than layer dimension!')
 
         self.verbose = verbose
 
         # Initialize layer list with correct heights
         self.layer_list = []
         for i in range(self.n_phasescreens):
-            layer = Layer(self.pixel_layer[i], self.pixel_layer[i], self.pixel_pitch, heights[i],
-                          precision=self.precision, target_device_idx=self.target_device_idx)
+            layer = Layer(self.pixel_layer[i],
+                          self.pixel_layer[i],
+                          self.pixel_pitch, heights[i],
+                          precision=self.precision,
+                          target_device_idx=self.target_device_idx)
             self.layer_list.append(layer)
         self.outputs['layer_list'] = self.layer_list
 
         self.seed = seed
-        self.last_position = np.zeros(self.n_phasescreens, dtype=self.dtype)
         self.scale_coeff = 1.0
 
         if self.seed <= 0:
@@ -118,7 +131,9 @@ class AtmoEvolution(BaseProcessingObj):
 
         if len(self.xp.unique(self.L0)) == 1:
             # Number of rectangular phase screens from a single square phasescreen
-            n_ps_from_square_ps = self.xp.floor(self.pixel_square_phasescreens / self.pixel_phasescreens)
+            n_ps_from_square_ps = self.xp.floor(
+                self.pixel_square_phasescreens / self.pixel_phasescreens
+            )
             # Number of square phasescreens
             n_ps = self.xp.ceil(float(self.n_phasescreens) / n_ps_from_square_ps)
 
@@ -145,8 +160,10 @@ class AtmoEvolution(BaseProcessingObj):
                     square_ps_index += 1
                     ps_index = 0
 
-                temp_screen = square_phasescreens[square_ps_index][int(self.pixel_phasescreens) * ps_index:
-                                                                    int(self.pixel_phasescreens) * (ps_index + 1), :]
+                temp_screen = square_phasescreens[square_ps_index][
+                    int(self.pixel_phasescreens) * ps_index:
+                    int(self.pixel_phasescreens) * (ps_index + 1), :
+                ]
                 temp_screens.append(temp_screen)
                 ps_index += 1
 
@@ -157,10 +174,14 @@ class AtmoEvolution(BaseProcessingObj):
                 raise ValueError('Number of elements in seed and L0 must be the same!')
 
             # Square phasescreens
-            square_phasescreens = phasescreens_manager(self.L0, self.pixel_square_phasescreens,
-                                                        self.pixel_pitch, self.data_dir,
-                                                        seed=seed, precision=self.precision,
-                                                        verbose=self.verbose, xp=self.xp)
+            square_phasescreens = phasescreens_manager(self.L0,
+                                                       self.pixel_square_phasescreens,
+                                                       self.pixel_pitch,
+                                                       self.data_dir,
+                                                       seed=seed,
+                                                       precision=self.precision,
+                                                       verbose=self.verbose,
+                                                       xp=self.xp)
 
             for i in range(self.n_phasescreens):
                 temp_screen = square_phasescreens[i][ :int(self.pixel_phasescreens), :]
@@ -202,7 +223,9 @@ class AtmoEvolution(BaseProcessingObj):
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
-        self.delta_time = self.t_to_seconds(self.current_time - self.last_t) + self.extra_delta_time
+        self.delta_time = cpuArray(
+            self.n_phasescreens*[self.t_to_seconds(self.current_time - self.last_t)]
+        )
         seeing = float(cpuArray(self.local_inputs['seeing'].value[0]))
         if seeing > 0:
             r0 = 0.9759 * 0.5 / (seeing * 4.848) * self.airmass**(-3./5.)
@@ -212,34 +235,56 @@ class AtmoEvolution(BaseProcessingObj):
 
     def trigger_code(self):
 
-        # if len(self.phasescreens) != len(wind_speed) or len(self.phasescreens) != len(wind_direction):
-        #     raise ValueError('Error: number of elements of wind speed and/or direction does not match the number of phasescreens')
+        # if len(self.phasescreens) != len(wind_speed) \
+        #   or len(self.phasescreens) != len(wind_direction):
+        #     raise ValueError('Error: number of elements of wind speed'
+        #                      'and/or direction does not match the number of phasescreens')
         wind_speed = cpuArray(self.local_inputs['wind_speed'].value)
         wind_direction = cpuArray(self.local_inputs['wind_direction'].value)
-        # Compute the delta position in pixels
-        delta_position =  wind_speed * self.delta_time / self.pixel_pitch  # [pixel]
-        new_position = self.last_position + delta_position
+
+        # Compute the delta position in pixels (time evolution)
+        delta_position = wind_speed * self.delta_time / self.pixel_pitch  # [pixel]
+
+        # Compute extra offset that doesn't get accumulated
+        extra_offset = wind_speed * self.extra_delta_time / self.pixel_pitch  # [pixel]
+
+        # Update last_position with delta_position
+        new_position = self.last_position + delta_position  # [pixel]
+
+        # cycle screens consider the effective position for checking boundary conditions
+        if self.cycle_screens:
+            new_position = np.where(
+                new_position + extra_offset + self.pixel_layer >= self.phasescreens_sizes_array,
+                0,
+                new_position
+            )
+
+        # Effective position = accumulated position + constant offset
+        # Note: extra_offset is added at each frame because it is a function of wind speed
+        effective_position = new_position + extra_offset  # [pixel]
+
         # Get quotient and remainder
         wdf, wdi = np.modf(wind_direction/90.0)
         wdf_full = wdf * 90
 
-        if self.cycle_screens:
-            new_position = np.where(new_position + self.pixel_layer >= self.phasescreens_sizes_array,  0, new_position)
-        new_position_quo = np.floor(new_position).astype(np.int64)
-        new_position_rem = (new_position - new_position_quo).astype(self.dtype)
+        effective_position_quo = np.floor(effective_position).astype(np.int64)
+        effective_position_rem = (effective_position - effective_position_quo).astype(self.dtype)
 
         for ii, p in enumerate(self.phasescreens):
-            pos = int(new_position_quo[ii])
+            pos = int(effective_position_quo[ii])
             ipli = int(self.pixel_layer[ii])
             ipli_p = int(pos + self.pixel_layer[ii])
-            layer_phase = (1.0 - new_position_rem[ii]) * p[0: ipli, pos: ipli_p] + new_position_rem[ii] * p[0: ipli, pos+1: ipli_p+1]
+            layer_phase = (1.0 - effective_position_rem[ii]) * p[0: ipli, pos: ipli_p] \
+                          + effective_position_rem[ii] * p[0: ipli, pos+1: ipli_p+1]
             layer_phase = self.xp.rot90(layer_phase, wdi[ii])
             if not wdf_full[ii] == 0:
-                layer_phase = self.ndimage_rotate(layer_phase, wdf_full[ii], reshape=False, order=1)
+                layer_phase = self.ndimage_rotate(
+                    layer_phase, wdf_full[ii], reshape=False, order=1
+                )
             self.layer_list[ii].phaseInNm[:] = layer_phase * self.scale_coeff
             self.layer_list[ii].generation_time = self.current_time
 
-        # print(f'Phasescreen_shift: {new_position=}') # Verbose?
         # Update position output
         self.last_position = new_position
+        self.last_effective_position = effective_position.copy()
         self.last_t = self.current_time

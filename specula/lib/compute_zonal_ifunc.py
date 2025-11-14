@@ -3,7 +3,8 @@ import numpy as np
 from specula.lib.make_mask import make_mask
 from specula import cpuArray
 
-def compute_zonal_ifunc(dim, n_act, xp=np, dtype=np.float32, circ_geom=False, angle_offset=0,
+def compute_zonal_ifunc(dim, n_act, xp=np, dtype=np.float32,circ_geom:bool=False,
+                        geom:str=None, angle_offset=0,
                         do_mech_coupling=False, coupling_coeffs=[0.31, 0.05],
                         do_slaving=False, slaving_thr=0.1,
                         obsratio=0.0, diaratio=1.0, mask=None, return_coordinates=False):
@@ -18,15 +19,23 @@ def compute_zonal_ifunc(dim, n_act, xp=np, dtype=np.float32, circ_geom=False, an
     step = float(dim) / float(n_act)
 
     # ----------------------------------------------------------
+    # ----------------------------------------------------------
+    if circ_geom is True:
+        if geom is not None:
+            raise ValueError(f'Too many geometry inputs! Both circ_geom = {circ_geom} and geom = {geom} were given')
+        geom = 'circular' # added for retro-compatibility
+    else:
+        if geom is None:
+            geom = 'square' # default geometry
+                          
     # Actuator Coordinates
-    if circ_geom:
+    if geom == 'circular':
         if n_act % 2 == 0:
-            na = xp.arange(round((n_act + 1) / 2)) * 6
+            na = xp.arange(xp.ceil((n_act + 1) / 2)) * 6
         else:
             step *= float(n_act) / float(n_act - 1)
-            na = xp.arange(round(n_act / 2)) * 6
+            na = xp.arange(xp.ceil(n_act / 2)) * 6
         na[0] = 1  # The first value is always 1
-
         n_act_tot = int(xp.sum(na))
         pol_coords = xp.zeros((2, n_act_tot))
         ka = 0
@@ -37,20 +46,29 @@ def compute_zonal_ifunc(dim, n_act, xp=np, dtype=np.float32, circ_geom=False, an
                 pol_coords[0, ka] = 360. / na[ia] * ja + angle_offset  # Angle in degrees
                 pol_coords[1, ka] = ia * step  # Radial distance
                 ka += 1
-
         # System center
         x_c, y_c = dim / 2, dim / 2
-
         # Convert from polar to Cartesian coordinates
         x = pol_coords[1] * xp.cos(xp.radians(pol_coords[0])) + x_c
         y = pol_coords[1] * xp.sin(xp.radians(pol_coords[0])) + y_c
-
-        # Maximum radius (outer boundary)
-        R = pol_coords[1].max()  # The maximum radial value is the outer boundary
-    else:
+    
+    elif geom == 'alpao':
         x, y = xp.meshgrid(xp.linspace(0, dim, n_act), xp.linspace(0, dim, n_act))
         x, y = x.ravel(), y.ravel()
-        n_act_tot = n_act ** 2
+        x_c, y_c = dim / 2, dim / 2 # center
+        rho = xp.sqrt((x-x_c)**2+(y-y_c)**2)
+        rho_max = (dim*(9/8-n_act/(24*16)))/2 # slightly larger than dim, depends on n_act
+        x = x[rho<=rho_max]
+        y = y[rho<=rho_max]
+        n_act_tot = int(xp.size(x))
+      
+    elif geom == 'square': # default
+        x, y = xp.meshgrid(xp.linspace(0, dim, n_act), xp.linspace(0, dim, n_act))
+        x, y = x.ravel(), y.ravel()
+        n_act_tot = n_act**2
+      
+    else:
+      raise ValueError("Unrecognized geometry type! Avaliable types are: 'circular', 'alpao', 'square'")
 
     coordinates = xp.vstack((x, y))
     grid_x, grid_y = xp.meshgrid(xp.arange(dim), xp.arange(dim))
@@ -160,7 +178,7 @@ def compute_zonal_ifunc(dim, n_act, xp=np, dtype=np.float32, circ_geom=False, an
                     ifs_cube[i] += slaveMat1[i, j] * ifs_cube[j]
 
         ifs_cube = ifs_cube[idx_master]
-        coordinates = coordinates[:, idx_master]
+        coords = coordinates[:, idx_master]
         n_act_tot = len(idx_master)
 
     ifs_2d = xp.array([ifs_cube[i][idx] for i in range(n_act_tot)], dtype=dtype)
@@ -168,6 +186,6 @@ def compute_zonal_ifunc(dim, n_act, xp=np, dtype=np.float32, circ_geom=False, an
     print("\nComputation completed.")
 
     if return_coordinates:
-        return ifs_2d, mask, coordinates
+        return ifs_2d, mask, coords
     else:
         return ifs_2d, mask

@@ -107,7 +107,7 @@ Create a script ``compute_influence_functions.py`` (inspired by ``test_modal_bas
       r0 = 0.15                    # Fried parameter at 500nm [m]
       L0 = 25.0                    # Outer scale [m] 
       zern_modes = 5               # Number of Zernike modes to include
-      oversampling = 1             # No oversampling
+      oversampling = 2             # Minimum oversampling for FFT computations
       
       # Computation parameters
       dtype = specula.xp.float32   # Use current device precision
@@ -871,8 +871,9 @@ Create a script ``analyse_data.py``:
        res = data["res"]
        comm = data["comm"]
        init = 50
-       turb = res[init:-1, :].copy()
-       turb[:, :comm.shape[1]] += comm[init+1:, :]
+       turb = res[init+1:, :].copy()
+       # command is applied with a delay of 1 frame
+       turb[:, :comm.shape[1]] += comm[init:-1, :]
        x = np.arange(turb.shape[1])+1
        
        # Plot RMS of residuals, commands and turbulence
