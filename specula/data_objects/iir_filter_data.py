@@ -779,7 +779,7 @@ class IirFilterData(BaseDataObj):
         return IirFilterData(ord_num, ord_den, num, den, target_device_idx=target_device_idx)
 
     @staticmethod
-    def lpf_from_fc(fc, fs, n_ord=2, target_device_idx=None):
+    def lpf_from_fc(fc, fs, n_ord=2, n_modes=1, target_device_idx=None):
         '''Build an IirFilterData object from a cut off frequency value/vector
         and a filter order value (must be even)'''
 
@@ -843,8 +843,16 @@ class IirFilterData(BaseDataObj):
             # Pad with zeros at the beginning (highest order terms first)
             num[i, n_coeff - len(num_total):] = num_total
             den[i, n_coeff - len(den_total):] = den_total
+
             ord_num[i] = len(num_total)
             ord_den[i] = len(den_total)
+
+            if n_modes > 1:
+                num = np.repeat(num, n_modes, axis=0)
+                den = np.repeat(den, n_modes, axis=0)
+                ord_num = np.repeat(ord_num, n_modes, axis=0)
+                ord_den = np.repeat(ord_den, n_modes, axis=0)
+
 
         return IirFilterData(ord_num, ord_den, num, den, target_device_idx=target_device_idx)
 

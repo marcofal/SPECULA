@@ -9,6 +9,7 @@ class LowPassFilter(IirFilter):
                  cutoff_freq: float,    # TODO =1.0,           
                  amplif_fact: float=None,
                  n_ord: int=None,
+                 n_modes: int=1,
                  delay: float=0,
                  offset: list=None,
                  og_shaper=None,
@@ -22,10 +23,10 @@ class LowPassFilter(IirFilter):
             if n_ord is not None:
                 raise ValueError('Only one of amplif_fact and n_ord can be specified')
             iir_filter_data = IirFilterData.lpf_from_fc_and_ampl(cutoff_freq, amplif_fact,
-                                               samp_freq, target_device_idx=target_device_idx)
+                                               samp_freq, target_device_idx=target_device_idx, n_modes=n_modes)
         else:
             iir_filter_data = IirFilterData.lpf_from_fc(cutoff_freq, samp_freq, n_ord=n_ord,
-                                                        target_device_idx=target_device_idx)
+                                                        target_device_idx=target_device_idx , n_modes=n_modes)
 
         # Initialize IirFilter object
         super().__init__(simul_params, iir_filter_data, delay=delay, offset=offset, og_shaper=og_shaper,
