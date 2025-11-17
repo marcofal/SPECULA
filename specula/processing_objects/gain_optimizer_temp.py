@@ -42,6 +42,7 @@ class GainOptimizerTemp(BaseProcessingObj):
                  precision: int = None,
                  initial_gain: float = 0.1,
                  prediction_horizon: int = 30,
+                 n_realizations: int = 10,
                  ):
 
         super().__init__(target_device_idx=target_device_idx, precision=precision)
@@ -54,7 +55,7 @@ class GainOptimizerTemp(BaseProcessingObj):
 
         self.time_step = simul_params.time_step
 
-        self.x = self.xp.nan
+        self.x = self.xp.nan  # State vector placeholder
         # Convert optimization parameters
         # self.opt_dt = self.seconds_to_t(opt_dt)
         self.opt_dt = opt_dt / self.time_step  # Ensure at least 1 time step
@@ -67,6 +68,7 @@ class GainOptimizerTemp(BaseProcessingObj):
         self.ngains = ngains #TODO CAREFUL not equal to nmodes
         self.running_mean = running_mean
         self.prediction_horizon = prediction_horizon
+        self.n_realizations = n_realizations
 
         # Get number of modes from filter
         self.nmodes = iir_filter_data.nfilter #1 for the test file
@@ -92,7 +94,6 @@ class GainOptimizerTemp(BaseProcessingObj):
 
         
         # self.iir_filter_data.set_gain(self.xp.repeat(initial_gain, self.nmodes))  # Set initial gain
-        initial_gain = 0.1
         self.iir_filter_data.set_gain(self.xp.repeat(initial_gain, self.nmodes))  # Set initial gain
         
         self.optimized_gain = BaseValue(
@@ -248,8 +249,8 @@ class GainOptimizerTemp(BaseProcessingObj):
         D_tf = z**(-actuator_delay)
 
         #Add the Low-pass mirror dynamics 
-        lp_num = self.xp.asarray(cpuArray(self.low_pass_data.num.copy()[0, :])) if self.low_pass_data else np.array([1.0])
-        lp_den = self.xp.asarray(cpuArray(self.low_pass_data.den.copy()[0, :])) if self.low_pass_data else np.array([1.0])
+        lp_num = self.xp.asarray(cpuArray(self.low_pass_data.num.copy()[0, :])) if self.low_pass_data else self.xp.array([1.0])
+        lp_den = self.xp.asarray(cpuArray(self.low_pass_data.den.copy()[0, :])) if self.low_pass_data else self.xp.array([1.0])
 
         lp_num_val = self.xp.polyval(lp_num[::-1], z)
         lp_den_val = self.xp.polyval(lp_den[::-1], z)
@@ -315,7 +316,7 @@ class GainOptimizerTemp(BaseProcessingObj):
         # Since H(z) is strictly proper, we set the feedthrough term D to zero.
         D = sp.sympify(0)
 
-        self.x = self.xp.zeros((n, 1))
+        self.x = self.xp.zeros((n, self.n_realizations), dtype=self.dtype)  # State vector placeholder
         # A, B, C, D = iir_filter_data.to_state_space()
         return A, B, C, D, H_cl
     
@@ -339,6 +340,7 @@ class GainOptimizerTemp(BaseProcessingObj):
         self.time_hist.append(t)
         # print("self.exo_data:", self.exo_data.shape);exit() #is as 2,
         self.data_history.append(self.exo_data[:self.nmodes].copy()) #Consider only the components of distortion that you want to optimize to
+
         if self.verbose and current_timestep % self.opt_dt == 0:
             # print(self.xp.array(self.data_history).shape)
             print(f"Current time step: {current_timestep}, time: {self.t_to_seconds(t):.3f}s")
@@ -401,7 +403,8 @@ class GainOptimizerTemp(BaseProcessingObj):
         gmax_vec = self._calculate_max_gains() 
         max_g = self.xp.max(gmax_vec)
 
-        turb_pred = self._predict_turbulent_signal(data, order=20) #last opt_dt values to learn
+        turb_pred = self._predict_turbulent_signal(data, order=10) #last opt_dt values to learn
+        # print(turb_pred.shape);exit()
         opt_g = self._optimize_g(turb_pred, max_g) # predicted signal to optimize  --> minimum energy
         # Ensure opt_g and max_g are xp arrays and clip elementwise.
         # opt_arr = self.xp.asarray(opt_g)
@@ -433,192 +436,99 @@ class GainOptimizerTemp(BaseProcessingObj):
                 #   f"mean={float(self.xp.mean(clipped_optimal_gain)):.4f}")
 
     
-    def project_to_stable(self, A, tol=0.9999):
+
+
+    def _exo_id_autoreg(self, data,id_hor,order):
         """
-        Project real matrix A to a stable matrix A_proj whose eigenvalues have magnitude < tol,
-        using the real Schur decomposition.
-        
-        Parameters
-        ----------
-        A : (n,n) array_like
-            Real square matrix to project.
-        tol : float in (0,1)
-            Target maximum magnitude for eigenvalues after projection.
-        
-        Returns
-        -------
-        A_proj : (n,n) ndarray
-            Real matrix with all eigenvalues having magnitude < tol.
+        Identification of the exosystem with an autoregressive model of a given order
         """
-        try:
-            from scipy.linalg import schur
-        except Exception as e:
-            raise ImportError("This function requires scipy.linalg.schur. Install scipy or run in an environment with scipy.") from e
+        model = AutoReg(data[-id_hor:], lags=order, old_names=False)
+        model_fit = model.fit()
+        ar_params = model_fit.params[1:]  # exclude intercept
 
-        A = self.xp.asarray(A, dtype=float)
-        if A.ndim != 2 or A.shape[0] != A.shape[1]:
-            raise ValueError("A must be a square matrix")
+        # Build companion matrix A
+        A = np.zeros((order, order))
+        A[0, :] = ar_params
+        for i in range(1, order):
+            A[i, i-1] = 1.0
 
-        # Real Schur: A = Q T Q^T where Q orthogonal and T is quasi-triangular (1x1 and 2x2 blocks)
-        T, Q = schur(A, output='real')  # scipy returns T, Z with A = Z T Z^T but named differently in some versions
-        # Note: some scipy versions return (T, Z) such that A = Z T Z^T. We'll use that convention.
+        # Get the noise standard deviation from the model
+        noise_std = np.sqrt(model_fit.sigma2)
 
-        n = T.shape[0]
-        T_stable = T.copy()
-
-        i = 0
-        while i < n:
-            if i < n-1 and abs(T[i+1, i]) > 1e-12:
-                # 2x2 block: handle complex-conjugate pair
-                block = T[i:i+2, i:i+2]
-                # compute eigenvalues of the 2x2 block
-                evals = self.xp.linalg.eigvals(block)
-                # take modulus and angle from either eigenvalue
-                # pick the eigenvalue with positive imaginary part if any
-                if self.xp.imag(evals[0]) >= 0:
-                    lam = evals[0]
-                else:
-                    lam = evals[1]
-                r = abs(lam)
-                theta = self.xp.angle(lam)
-                # map radius to be < tol (clip)
-                r_mapped = min(r, tol)
-                # rebuild a real 2x2 rotation-dilation block for r_mapped * exp(±i theta)
-                T_stable[i:i+2, i:i+2] = r_mapped * self.xp.array([[self.xp.cos(theta), -self.xp.sin(theta)],
-                                                            [self.xp.sin(theta),  self.xp.cos(theta)]])
-                i += 2
-            else:
-                # 1x1 real block (real eigenvalue)
-                lam = T[i, i]
-                r = abs(lam)
-                # map to inside unit circle by clipping magnitude to tol, preserving sign
-                if r > tol:
-                    T_stable[i, i] = lam / r * tol
-                else:
-                    T_stable[i, i] = lam
-                i += 1
-
-        # Reconstruct
-        # A = Q T Q^T  -> A_proj = Q T_stable Q^T
-        A_proj = Q @ T_stable @ Q.T
-        # Force real rounding noise to zero (small)
-        A_proj = self.xp.real_if_close(A_proj, tol=1000)
-        return A_proj
+        
+        return A, model_fit, noise_std
     
+
     def _predict_turbulent_signal(self, data, order):
         """
         predict the turbulent signal in the predictive optimization horizon (opt_dt)
         """
-        model = AutoReg(data, lags=order, old_names=False, exog=self.xp.random.normal(size=(data.shape[0],)).astype(self.dtype), trend="n").fit()
-        # model = AutoReg(data, lags=order, old_names=False).fit()
-        # A_exo = self.xp.zeros((order + 1, order + 1), dtype=self.dtype)
-        # B_exo = self.xp.zeros((order + 1, 1), dtype=self.dtype)
-        # C_exo = self.xp.zeros((1, order + 1), dtype=self.dtype)
-        # A_exo[0, 0] = model.params[0]
-        # A_exo[1, 0] = model.params[0]
-        # A_exo[1, 1:] = model.params[1:-1]
-        # A_exo[2:, 1:-1] = self.xp.eye(order - 1, dtype=self.dtype)
-        # B_exo[1, 0] = model.params[-1]
-        # C_exo[0, 1] = 1
-        # D_exo = self.xp.zeros((1, 1), dtype=self.dtype)
+        A_exo, model_fit, noise_std = self._exo_id_autoreg(data, id_hor=self.prediction_horizon, order=order)
+        # Get the noise standard deviation from the model
 
+        x = self.xp.zeros((A_exo.shape[0], self.prediction_horizon, self.n_realizations), dtype=self.dtype) #state, time, realization
+        y = self.xp.zeros((self.n_realizations, self.prediction_horizon), dtype=self.dtype) #realization, time
+        x[:,0,:] = self.xp.repeat(data[-order:].copy().astype(self.dtype), self.n_realizations).reshape(order, self.n_realizations)  # Use the last 'order' values of data
+        y[:,0] = self.xp.repeat(data[-1].copy().astype(self.dtype), self.n_realizations).reshape(self.n_realizations)  # First predicted output is the last known data point
 
-        A_exo = np.zeros((order,order) , dtype=np.float64)
-        B_exo = np.zeros((order, 1), dtype=np.float64)
-        C_exo = np.zeros((1, order), dtype=np.float64)
+        for t in range(1, self.prediction_horizon):
+            
+            noise = self.xp.zeros((order, self.n_realizations), dtype=self.dtype)
+            noise_t = self.xp.random.randn(self.n_realizations) * noise_std
+            #create noise_t vector --> order, n_realizations
 
-        # Generate state-space representation from fitted AR model
-        A_exo[0, :] = model.params[:order]
-        A_exo[1:, :-1] = np.eye(order - 1, dtype=np.float64)
-        B_exo[0, 0] = model.params[-1]  # Input enters through first state
-        C_exo[0, 0] = 1.0  # Output is first state
-        D_exo = np.array([[0.0]], dtype=np.float64)
+            noise[0, :] = noise_t
+            #
 
-        # Y = self.xp.zeros((len(data), 1), dtype=self.dtype)
-        # X_pred = self.xp.zeros((order + 1, 1), dtype=self.dtype)
-        # X_pred[0, 0] = model.params[0]
-        # # Set the first dynamic state with the current turbulence value.
-        # X_pred[1:, 0] = data[-order:][::-1].copy().astype(self.dtype)  # Use the last 'TT_identification' values of phi_m
-        # Y[0] = data[-1]
+            # print(f"noise_t shape: {noise_t.shape}, noise shape: {noise.shape}, x shape: {x[:,t:t+1, :] .shape}, A_exo shape: {A_exo.shape}, t: {t}")
 
-        Y = np.zeros((self.prediction_horizon, 1), dtype=np.float64)
-        X_pred = np.zeros((order, 1), dtype=np.float64)
-        X_pred[0, 0] = model.params[0]
-        # # Set the first dynamic state with the current turbulence value.
-        X_pred[:, 0] = data[-order:][::-1].copy().astype(np.float64)  # Use the last 'TT_identification' values of data
-        Y[0] = data[-1]
+            # print(f"A_exo shape: {A_exo.shape}, x shape: {x.shape}, noise_t shape: {noise_t.shape}")
+            for j in range(self.n_realizations):
+                x[:,t, j:j+1] = A_exo @ x[:,t-1, j:j+1] + noise[:, j:j+1]
+                y[j, t] = x[0,t, j]
 
-        # # Enforce stability of the exogenous AR state matrix by projecting eigenvalues
-        # # inside the unit circle (with a small margin).
-        # radius_limit = 1.0
-        # # Compute eigenvalues and eigenvectors of A_exo
-        # eigvals, eigvecs = self.xp.linalg.eig(A_exo)
-        # # Check if any eigenvalues are outside the stability region
-        # unstable_mask = self.xp.abs(eigvals) >= radius_limit
-        # if self.xp.any(unstable_mask):
-        #     A_exo = self.project_to_stable(A_exo, tol=radius_limit)
-
+            
         
-        for h in range(1,(self.prediction_horizon)):
-            # noise = self.xp.random.normal(0, self.xp.std(model.resid), 1).astype(self.dtype)
-            # Xp = A_exo @ X_pred + B_exo * noise[0]  # Deterministic state update
-            # Xp = A_exo @ X_pred + B_exo * np.random.normal() # Deterministic state update
-            Xp = A_exo @ X_pred  # Deterministic state update
-            Y[h] = C_exo @ Xp    # Compute the predicted output --> will be the predicted turbulent signal (u in the scheme)
-            X_pred = Xp.copy()   # Update the state for the next step
-        
-        if self.verbose and self.plot_debug:
+        if self.plot_debug:
 
-            sns.set_context("talk", font_scale=1.2)
-            # Ensure numpy arrays for plotting
-            data_np = np.asarray(data).flatten()
-            y_np = np.asarray(Y).flatten()
+            plt.figure(figsize=(10, 6))
+            # Calculate mean and standard deviation across realizations
+            y_mean = self.xp.mean(y, axis=0)
+            y_std = self.xp.std(y, axis=0)
 
-            # Concatenate original and predicted signals to inspect composition
-            combined = np.concatenate([data_np, y_np])
+            # Create time axis for plotting
+            t_axis = self.xp.arange(self.prediction_horizon) * self.time_step
 
-            plt.figure(figsize=(12, 5))
-            # Original signal (past)
-            plt.plot(np.arange(len(data_np)), data_np, label='Original Signal (past)', linewidth=1.5)
-            # Predicted signal (future) plotted starting after the original segment
-            plt.plot(np.arange(len(data_np), len(data_np) + len(y_np)), y_np, label='Predicted Signal (future)', linewidth=1.5, linestyle='--')
-            # Concatenated view
-            plt.plot(np.arange(len(combined)), combined, label='Concatenated (past + predicted)', alpha=0.4)
-            # Mark the boundary between past and prediction
-            plt.axvline(len(data_np) - 0.5, color='k', linestyle=':', label='Prediction start')
-            plt.title('Turbulent Signal: Past, Predicted, and Concatenated View')
-            plt.xlabel('Time Steps')
+            # Convert to CPU arrays for plotting
+            t_plot = cpuArray(t_axis)
+            y_mean_plot = cpuArray(y_mean)
+            y_std_plot = cpuArray(y_std)
+            y_plot = cpuArray(y)
+
+            # Plot individual realizations
+            for j in range(min(self.n_realizations, 10)):  # Limit to 10 realizations for clarity
+                plt.plot(t_plot, y_plot[j, :], alpha=0.3, linewidth=0.5, color='gray')
+
+            # Plot mean signal
+            plt.plot(t_plot, y_mean_plot, 'b-', linewidth=2, label='Mean')
+
+            # Plot variance tube (mean ± std)
+            plt.fill_between(t_plot, 
+                             y_mean_plot - y_std_plot, 
+                             y_mean_plot + y_std_plot, 
+                             alpha=0.3, color='blue', label='±1 Std Dev')
+
+            plt.xlabel('Time (s)')
             plt.ylabel('Amplitude')
-            plt.legend()
-            plt.grid()
-
-            sns.set_context("talk", font_scale=1.2)
-            plt.rcParams.update({'savefig.dpi': 300, 'figure.dpi': 300})
-            import os
-
-            plt.figure(figsize=(8, 8))
-            # Plot PSDs of original vs predicted signals
-            f_data, psd_data = signal.welch(data_np, fs=1.0/self.time_step, nperseg=min(len(data_np)//4, 256))
-            f_pred, psd_pred = signal.welch(y_np, fs=1.0/self.time_step, nperseg=min(len(y_np)//4, 256))
-
-            plt.loglog(f_data, psd_data, label='Original Signal PSD', linewidth=1.5)
-            plt.loglog(f_pred, psd_pred, label='Predicted Signal PSD', linewidth=1.5, linestyle='--')
-            plt.xlabel('Frequency (Hz)')
-            plt.ylabel('Power Spectral Density')
-            plt.title('PSD Comparison: Original vs Predicted Signal')
+            plt.title(f'Predicted Turbulent Signal ({self.n_realizations} realizations)')
             plt.legend()
             plt.grid(True, alpha=0.3)
-
-            # Save to Desktop as PDF
-            save_path = os.path.expanduser("~/Desktop/psd_comparison.pdf")
-            plt.savefig(save_path, format='pdf', bbox_inches='tight')
-            print(f"PSD comparison plot saved to: {save_path}")
-
-
+            plt.tight_layout()
             plt.show()
 
 
-        return Y.flatten()
+
+        return y
 
     def _optimize_g(self, predicted_signal, max_gain):
         """
@@ -682,7 +592,7 @@ class GainOptimizerTemp(BaseProcessingObj):
         z = sp.symbols('z', complex=True)
         g = sp.symbols('g', real=True, positive=True)
 
-        n_points = len(predicted_signal)
+        n_points = predicted_signal.shape[1]
         fs = 1.0 / self.time_step
         freq = self.xp.fft.fftfreq(n_points, 1 / fs)
         omega = 2 * self.xp.pi * freq
@@ -728,52 +638,23 @@ class GainOptimizerTemp(BaseProcessingObj):
         # D = self._D_func(gain)
 
         x = self.x.copy()
+        # x = self.xp.zeros((A.shape[0], predicted_signal.shape[1]), dtype=self.dtype) #state, prediction horizon
         # print(x.shape);exit()
-        y_td = self.xp.zeros(n_points, dtype=self.dtype)
+        y_td = self.xp.zeros((n_points, self.n_realizations), dtype=self.dtype) #time, realizations
+
         
         for t in range(n_points):
+            for j in range(self.n_realizations):
+                x[:, j:j+1] = A @ x[:, j:j+1] + B * predicted_signal[j:j+1,t:t+1]
+                y_td[t, j] = (C @ x[:, j:j+1] + D * predicted_signal[j:j+1,t:t+1])
+        
 
-            x = A @ x + B * predicted_signal[t]
-            y_td[t] = (C @ x + D * predicted_signal[t])[0]
 
         self.x = x.copy()
 
-        return self.xp.sum(y_td**2)
+        return 1/self.n_realizations * self.xp.linalg.norm(y_td)
 
         
-
-        # # Ensure numpy arrays
-        # A = self.xp.asarray(den, dtype=float).copy()
-        # B = self.xp.asarray(num_normalized, dtype=float).copy()
-
-        # # Lengths for polynomials in z^-1 (lfilter expects [b0, b1, ...] corresponding to z^-0, z^-1...)
-        # len_a = len(A)
-        # len_b = len(B)
-        # # Denominator a_total = A + B shifted by total_delay (i.e., padded)
-        # a_len = max(len_a, len_b + total_delay)
-        # a_total = self.xp.zeros(a_len, dtype=float)
-        # a_total[:len_a] += A
-        # a_total[total_delay:total_delay + len_b] += B
-
-        # # Numerator is A shifted by sensor_delay
-        # b_total = self.xp.zeros(a_len + sensor_delay, dtype=float)
-        # b_total[sensor_delay:sensor_delay + len_a] += A
-
-        # # Trim trailing zeros to avoid excessively long filters
-        # # make sure a_total[0] != 0
-        # if self.xp.abs(a_total[0]) < 1e-12:
-        #     a_total[0] = 1e-12
-
-        # # Now filter the input using scipy.signal.lfilter
-        # # Convert predicted_signal to numpy array if necessary
-        # pred = self.xp.asarray(predicted_signal, dtype=float)
-        # try:
-        #     y_td = signal.lfilter(b_total, a_total, pred)
-        # except Exception:
-        #     # If filtering fails, fall back to FFT method result
-        #     y_td = self.xp.real(self.xp.fft.ifft(self.xp.fft.fft(pred) * self.xp.ones_like(self.xp.fft.fft(pred))))
-
-
     def _calculate_max_gains(self):
         """
         Calculate maximum stable gains for each mode using IirFilterData stability analysis.
