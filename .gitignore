@@ -146,3 +146,6 @@ dmypy.json
 **/*.png
 ConvolutionKernel*
 
+# Personal scratch folder, not part of the repo
+/avc_full_demo/
+

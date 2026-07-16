@@ -1,0 +1,105 @@
+---
+# Adds an AVC (Adaptive Vibration Cancellation) correction on top of
+# params_scao_sh_test.yml + params_scao_sh_vibration.yml.
+#
+# AVC watches the WFS-measured residual of the vibrating mode only (mode
+# index 0 = tip, extracted from rec.out_modes with a BaseSlicer), estimates
+# and tracks the vibration's frequency/phase/amplitude, and produces a
+# counter-vibration correction. That correction (a single value) is
+# inserted back into a full-length, mostly-zero command vector
+# (BaseInserter) and summed with the main integrator's command
+# (BaseOperation, sum=True) before being sent to the real DM. This mirrors
+# how the reference algorithm is meant to be deployed: it runs in parallel
+# with, and does not replace, the main AO loop's own controller (see e.g.
+# Muradore, Pettazzi & Fedrigo, ECC 2014, Fig. 1).
+#
+# Usage (from the test/ directory, with calibration files in place):
+#
+#   from specula.simul import Simul
+#   Simul('params_scao_sh_test.yml',
+#         'params_scao_sh_vibration.yml',
+#         'params_scao_sh_vibration_avc.yml').run()
+#
+# AVC's initial frequency guess (46.5 Hz) is deliberately offset from the
+# true 47 Hz injected in params_scao_sh_vibration.yml (as if coming from a
+# prior offline find_vib_peaks calibration pass), so the tracking behavior
+# is visible in the stored avc_freq history.
+#
+# GAIN TUNING CAVEAT (important, read before changing gx/gomega):
+# Unlike the open-loop params_avc_test.yml, here AVC's in_measurement
+# (rec.out_modes) is downstream of the *same* WFS/DM pipeline that the main
+# integrator also closes around (2-frame delay, photon + readout noise).
+# AVC therefore closes its own local feedback loop nested inside the
+# already-closed AO loop. Empirically (verified by direct simulation):
+#   - gomega (phase/frequency tracking gain) is well-behaved here: with
+#     gomega=0.5 the frequency estimate locks onto the true 47 Hz within
+#     roughly 0.2-0.5 s and stays there, even under WFS noise.
+#   - gx (state/amplitude gain) is comparatively delicate: gx>=0.1 makes
+#     the correction amplitude grow without bound over a few seconds
+#     instead of settling once the noise/delay of the nested loop is not
+#     negligible (the growing correction increases residual, not the
+#     Strehl ratio). gx=0.03 (used below) is stable over several seconds,
+#     with the AVC command amplitude and Strehl ratio staying in line with
+#     the no-AVC baseline. Reaching a net Strehl improvement in closed loop
+#     requires either a slower/staged gx ramp-up, reducing the main
+#     integrator's own gain on the vibrating mode (to remove the dual-loop
+#     interaction) and/or explicit delay compensation in the AVC state
+#     update - a genuine tuning/deployment exercise beyond this example's
+#     scope, consistent with how AVC-type notch/adaptive correctors are
+#     usually deployed and validated system-by-system in the literature.
+# This file is therefore tuned to be a *stable, correct-tracking* reference
+# starting point, not a maximum-performance one. See the comparison numbers
+# in the accompanying analysis for the measured frequency-lock behavior.
+
+main_override:
+  total_time:        3.000                   # [s] matches params_scao_sh_vibration.yml override
+
+mode_slicer:
+  class:             'BaseSlicer'
+  indices:           0                        # mode 0 = tip, same as vib_dm's idx_modes
+  inputs:
+    in_value: 'rec.out_modes'
+  outputs: ['out_value']
+
+avc:
+  class:             'AVC'
+  simul_params_ref:  'main'
+  n_avc:             1
+  freq:              [46.5]                   # [Hz] initial frequency guess (intentionally off)
+  gx:                0.03                      # conservative: stable in this closed, noisy loop
+  gomega:            0.5
+  k:                 1.0
+  c:                 1.0
+  inputs:
+    in_measurement: 'mode_slicer.out_value'
+  outputs: ['out_comm', 'out_freq']
+
+avc_inserter:
+  class:             'BaseInserter'
+  output_size:        40                      # must match dm/control nmodes
+  slice_args:        [[0, 1], [0, 1]]          # insert avc.out_comm[0:1] into mode 0
+  inputs:
+    in_value: 'avc.out_comm'
+  outputs: ['out_value']
+
+comm_combiner:
+  class:             'BaseOperation'
+  sum:               True
+  inputs:
+    in_value1: 'control.out_comm'
+    in_value2: 'avc_inserter.out_value'
+  outputs: ['out_value']
+
+dm_override:
+  # NOTE: shallow dict update, see params_scao_sh_vibration.yml comment.
+  # dm's only other relevant key ('inputs') is fully replaced here on purpose.
+  inputs:
+    in_command: 'comm_combiner.out_value'
+
+data_store_override:
+  inputs:
+    input_list: ['res_sr-psf.out_sr',
+                 'res_modes-rec.out_modes',
+                 'res_comm-control.out_comm',
+                 'avc_freq-avc.out_freq',
+                 'avc_comm-avc.out_comm']

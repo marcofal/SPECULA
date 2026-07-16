@@ -16,15 +16,15 @@ def cpu_and_gpu(f):
     '''
     def test_gpu(self):
         return f(self, target_device_idx=0, xp=cp)
-    
+
     def test_cpu(self):
         return f(self, target_device_idx=-1, xp=np)
-    
+
     def test_both(self):
         if cp is not None:
             test_gpu(self)
         test_cpu(self)
-        
+
     return test_both
 
 def cpu_and_gpu_noself(f):
@@ -35,15 +35,15 @@ def cpu_and_gpu_noself(f):
     '''
     def test_gpu():
         return f(xp=cp)
-    
+
     def test_cpu():
         return f(xp=np)
-    
+
     def test_both():
         if cp is not None:
             test_gpu()
         test_cpu()
-        
+
     return test_both
 
 def assert_HDU_contents_match(data_path, ref_path, decimal=5):
@@ -166,4 +166,3 @@ def find_instances(obj, cls, *, seen=None, path="root"):
         for attr_name, value in vars(obj).items():
             if (attr_name not in excluded_names) and (str(type(value)) not in excluded_types):
                 yield from find_instances(value, cls, seen=seen, path=f"{path}.{attr_name}")
-

@@ -1,0 +1,50 @@
+---
+# Basic AVC processing object test.
+#
+# A single-frequency disturbance (WaveGenerator, 30 Hz) is fed directly into
+# one AVC instance. AVC's initial frequency guess (28 Hz) is deliberately
+# off from the true one, so the stored out_freq history shows the frequency
+# estimate converging while it runs. No optics/WFS chain is involved: this
+# is meant as a fast, self-contained functional check of the AVC object
+# alone, mirroring the style of params_low_pass_filter_test.yml.
+#
+# Usage (from the test/ directory):
+#
+#   from specula.simul import Simul
+#   Simul('params_avc_test.yml').run()
+
+main:
+  class:             'SimulParams'
+  root_dir:          './calib'                # Root directory for calibration manager (unused here)
+  pixel_pupil:       160                       # unused in this example
+  pixel_pitch:       0.05                      # unused in this example
+  total_time:        0.5                       # [s] Total simulation running time
+  time_step:         0.001                     # [s] Simulation time step
+
+disturbance:
+  class:             'WaveGenerator'
+  wave_type:         'SIN'
+  amp:               [1.0]                     # disturbance amplitude
+  freq:              [35.0]                    # [Hz] true disturbance frequency
+  outputs: ['output']
+
+avc:
+  class:             'AVC'
+  simul_params_ref:  'main'
+  n_avc:             1
+  freq:              [28.0]                    # [Hz] initial frequency guess (intentionally off)
+  gx:                0.3
+  gomega:            2.0
+  k:                 1.0
+  c:                 1.0
+  inputs:
+    in_measurement: 'disturbance.output'
+  outputs: ['out_comm', 'out_freq']
+
+data_store:
+  class:             'DataStore'
+  store_dir:         './output'                # Data result directory: 'store_dir'/TN/
+  inputs:
+    input_list: ['meas-disturbance.output',
+                 'comm-avc.out_comm',
+                 'freq-avc.out_freq']

@@ -1,0 +1,62 @@
+---
+# Adds a narrow-band mechanical vibration on top of the base SCAO/SH/NGS
+# system defined in params_scao_sh_test.yml.
+#
+# The vibration is modeled as a dedicated, single-mode "shaking" DM driven
+# directly by a sinusoid (WaveGenerator), independent of the atmospheric
+# turbulence and of the AO loop's own correction. Its phase layer is summed
+# into the propagation, exactly like the real 'dm' layer, via
+# prop.inputs.common_layer_list. This is the standard way of injecting a
+# mechanical vibration in SPECULA/PASSATA-style configs.
+#
+# Mode index 0 (0-indexed, Zernike/zernike ifunc convention used by 'dm')
+# corresponds to Noll index 2 = tip, the classic telescope-vibration target
+# (see e.g. Muradore, Pettazzi & Fedrigo, ECC 2014).
+#
+# Usage (from the test/ directory, with calibration files in place, see
+# params_scao_sh_test.yml / test_sh_simulation.py for how to obtain them):
+#
+#   from specula.simul import Simul
+#   Simul('params_scao_sh_test.yml', 'params_scao_sh_vibration.yml').run()
+#
+# This file alone (without params_scao_sh_vibration_avc.yml) is the
+# "baseline" case: vibration present, AO loop tries to reject it with its
+# ordinary integrator control, no AVC.
+
+main_override:
+  total_time:        3.000                  # [s] long enough for many vibration cycles
+
+vib_wave:
+  class:             'WaveGenerator'
+  wave_type:         'SIN'
+  amp:               [150.0]                # [nm] vibration amplitude
+  freq:              [47.0]                 # [Hz] vibration frequency
+  outputs: ['output']
+
+vib_dm:
+  class:             'DM'
+  simul_params_ref:  'main'
+  type_str:          'zernike'
+  idx_modes:         [0]                    # mode 0 = tip
+  obsratio:          0.1
+  height:            0
+  inputs:
+    in_command: 'vib_wave.output'
+  outputs: ['out_layer']
+
+prop_override:
+  # NOTE: '<obj>_override.inputs' replaces the entire 'inputs' dict of the
+  # target object (it is a shallow dict update, not a recursive merge), so
+  # atmo_layer_list must be repeated here or the atmosphere would silently
+  # disappear from the propagation.
+  inputs:
+    atmo_layer_list: ['atmo.layer_list']
+    common_layer_list: ['pupilstop',
+                  'dm.out_layer:-1',
+                  'vib_dm.out_layer']
+
+data_store_override:
+  inputs:
+    input_list: ['res_sr-psf.out_sr',
+                 'res_modes-rec.out_modes',
+                 'res_comm-control.out_comm']
