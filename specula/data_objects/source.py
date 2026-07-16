@@ -7,9 +7,13 @@ from specula import ASEC2RAD
 
 degree2rad = np.pi / 180.
 
-class Source(BaseDataObj):
-    '''source'''
 
+class Source(BaseDataObj):
+    """
+    Source data object.
+    Holds the properties of a source, such as polar coordinates, magnitude, wavelength,
+    height, band, zero point, and error in coordinates.
+    """
     def __init__(self,
                  polar_coordinates: list,
                  magnitude: float,
@@ -18,7 +22,6 @@ class Source(BaseDataObj):
                  band: str = '',
                  zero_point: float = 0,
                  error_coord: tuple = (0., 0.),
-                 verbose: bool = False,
                  target_device_idx: int = None,
                  precision: int = None):
         """
@@ -26,43 +29,41 @@ class Source(BaseDataObj):
 
         Parameters
         ----------
-        polar_coordinates : list
-            The polar coordinates [radius, angle] of the source (in arcseconds and degrees).
-        magnitude : float
+        polar_coordinates : list [arcsec, deg]
+            The polar coordinates [radius in arcsec, angle in deg] of the source.
+        magnitude : float [1]
             The magnitude of the source.
-        wavelengthInNm : float
-            The wavelength of the source in nanometers.
-        height : float, optional
+        wavelengthInNm : float [nm]
+            The wavelength of the source.
+        height : float [m], optional
             The height of the source (default: infinity, i.e., astronomical source).
-        band : str, optional
+        band : str
             The photometric band of the source (default: '').
-        zero_point : float, optional
+        zero_point : float [1], optional
             The photometric zero point (default: 0).
-        error_coord : tuple, optional
-            Error to add to the polar coordinates (default: (0., 0.)).
-        verbose : bool, optional
-            If True, print verbose output (default: False).
-        target_device_idx : int, optional
+        error_coord : tuple [arcsec, deg], optional
+            Error to add to the polar coordinates [radius error in arcsec, angle error in deg] (default: (0., 0.)).
+        target_device_idx : int [1], optional
             Device index for computation (default: None).
-        precision : int, optional
+        precision : int [1], optional
             Precision for computation (default: None).
         """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
-        
+
         self.orig_polar_coordinates = np.array(polar_coordinates).copy()
 
-        polar_coordinates = np.array(polar_coordinates, dtype=self.dtype) + np.array(error_coord, dtype=self.dtype)
+        polar_coordinates = np.array(polar_coordinates, dtype=self.dtype) \
+                          + np.array(error_coord, dtype=self.dtype)
         if any(error_coord):
-            print(f'there is a desired error ({error_coord[0]},{error_coord[1]}) on source coordinates.')
-            print(f'final coordinates are: {polar_coordinates[0]},{polar_coordinates[1]}')
-        
+            self.logger.info(f'there is a desired error ({error_coord[0]},{error_coord[1]}) on source coordinates.')
+            self.logger.info(f'final coordinates are: {polar_coordinates[0]},{polar_coordinates[1]}')
+
         self.polar_coordinates = polar_coordinates
         self.height = height
         self.magnitude = magnitude
         self.wavelengthInNm = wavelengthInNm
         self.zero_point = zero_point
         self.band = band
-        self.verbose = verbose
         self.error_coord = error_coord
 
     def get_fits_header(self):
@@ -154,8 +155,7 @@ class Source(BaseDataObj):
             band = None
 
         res = n_phot(self.magnitude, band=band, lambda_=self.wavelengthInNm/1e9, width=1e-9, e0=e0)
-        if self.verbose:
-            print(f'source.phot_density: magnitude is {self.magnitude}, and flux (output of n_phot with width=1e-9, surf=1) is {res[0]}')
+        self.logger.info(f'source.phot_density: magnitude is {self.magnitude}, and flux (output of n_phot with width=1e-9, surf=1) is {res[0]}')
         return res[0]
 
     def save(self, filename, overwrite=False):

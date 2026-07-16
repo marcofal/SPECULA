@@ -1,13 +1,15 @@
 from specula import np
-from specula.base_processing_obj import BaseProcessingObj
+from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.base_value import BaseValue
 from specula.connections import InputValue
 from specula.data_objects.recmat import Recmat
 
 
 class MirrorCommandsCombinator(BaseProcessingObj):
-    '''Mirror Commands Combinator'''
-
+    """
+    Mirror commands combinator processing object, 
+    Combines commands from multiple sources, specialized for MORFEO-like systems
+    """
     def __init__(self,
                  k_vector,
                  recmat: Recmat,
@@ -35,9 +37,15 @@ class MirrorCommandsCombinator(BaseProcessingObj):
         self.dims_LO_cum = np.cumsum(self.dims_LO)
         self.dims_HO_cum = np.cumsum(self.dims_HO)
 
-        self.result_commands1 = BaseValue('First chunk of output commands', target_device_idx=target_device_idx)
-        self.result_commands2 = BaseValue('Second chunk of output commands', target_device_idx=target_device_idx)
-        self.result_commands3 = BaseValue('Third chunk of output commands', target_device_idx=target_device_idx)
+        self.result_commands1 = BaseValue('First chunk of output commands',
+                                          target_device_idx=target_device_idx,
+                                          precision=precision)
+        self.result_commands2 = BaseValue('Second chunk of output commands',
+                                          target_device_idx=target_device_idx,
+                                          precision=precision)
+        self.result_commands3 = BaseValue('Third chunk of output commands',
+                                          target_device_idx=target_device_idx,
+                                          precision=precision)
 
         self.inputs['in_commandsHO'] = InputValue(type=BaseValue)      # could be 6000 elements, dims[0]
         self.inputs['in_commandsLO'] = InputValue(type=BaseValue)      # could be 5 elements, dims[1]
@@ -55,6 +63,19 @@ class MirrorCommandsCombinator(BaseProcessingObj):
 
         self.z1 = self.xp.zeros( self.dims_LO[0], dtype=self.dtype)
         self.z2 = self.xp.zeros( self.out_dims[0]-self.dims_LO[0]-self.dims_LO[2], dtype=self.dtype)
+
+    @classmethod
+    def input_names(cls):
+        return {'in_commandsHO': InputDesc(BaseValue, 'High-order command vector input'),
+                'in_commandsLO': InputDesc(BaseValue, 'Low-order command vector input'),
+                'in_commandsF': InputDesc(BaseValue, 'Focus command scalar input'),
+                'in_commandsP': InputDesc(BaseValue, 'Pointing command vector input')}
+
+    @classmethod
+    def output_names(cls):
+        return {'out_result_commands1': OutputDesc(BaseValue, 'First chunk of combined output commands'),
+                'out_result_commands2': OutputDesc(BaseValue, 'Second chunk of combined output commands'),
+                'out_result_commands3': OutputDesc(BaseValue, 'Third chunk of combined output commands')}
 
     def trigger_code(self):
         x_HO = self.local_inputs['in_commandsHO'].value
@@ -80,7 +101,7 @@ class MirrorCommandsCombinator(BaseProcessingObj):
         y2 = x_HO2
         y3 = self.xp.concatenate( ( x_LO3, x_HO3 ) )
 
-        #print(f'{len(y1)=}, {len(y2)=}, {len(y3)=}')
+        #self.logger.debug(f'{len(y1)=}, {len(y2)=}, {len(y3)=}')
         self.result_commands1.value[:] = y1
         self.result_commands2.value[:] = y2
         self.result_commands3.value[:] = y3

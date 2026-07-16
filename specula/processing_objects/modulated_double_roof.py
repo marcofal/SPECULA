@@ -20,12 +20,16 @@ def pyr1_abs2(v, norm, ffv, xp):
 
 
 class ModulatedDoubleRoof(ModulatedPyramid):
+    """
+    Pyramid wavefront sensor with double roof processing object.
+    Includes tip-tilt modulation and double roof.
+    """
     def __init__(self,
                  simul_params: SimulParams,
-                 wavelengthInNm: float, # TODO =750,
-                 fov: float,            # TODO =2.0,
-                 pup_diam: int,         # TODO =30,
-                 output_resolution: int,# TODO =80,
+                 wavelengthInNm: float,
+                 fov: float,
+                 pup_diam: int,
+                 output_resolution: int,
                  mod_amp: float = 3.0,
                  mod_step: int = None,
                  fov_errinf: float = 0.5,
@@ -77,7 +81,7 @@ class ModulatedDoubleRoof(ModulatedPyramid):
         self.pup_dist = pup_dist
 
         # After initialization, create the second roof's exponential
-        iu = 1j  # complex unit
+        iu = self.xp.array(1j, dtype=self.complex_dtype)  # complex unit
         roof1_exp = self.xp.exp(-2 * self.xp.pi * iu * self.roof1_tlt, dtype=self.complex_dtype)
         roof2_exp = self.xp.exp(-2 * self.xp.pi * iu * self.roof2_tlt, dtype=self.complex_dtype)
 
@@ -87,7 +91,6 @@ class ModulatedDoubleRoof(ModulatedPyramid):
         # Pre-allocate arrays to avoid memory allocation in trigger_code
         self.roof1_image = self.xp.zeros((self.fft_totsize, self.fft_totsize), dtype=self.dtype)
         self.roof2_image = self.xp.zeros((self.fft_totsize, self.fft_totsize), dtype=self.dtype)
-        self.roof2_factor = self.xp.ones((self.fft_totsize, self.fft_totsize), dtype=self.dtype)
 
         # Pre-calculate mid points
         self.mid_h = self.fft_totsize // 2
@@ -148,6 +151,7 @@ class ModulatedDoubleRoof(ModulatedPyramid):
 
         # Return the first roof for compatibility (the second will be accessed directly)
         return self.roof1_tlt
+
 
     def trigger_code(self):
         u_tlt_const = self.ef * self.tlt_f

@@ -1,23 +1,26 @@
 from specula import cpuArray
 from specula.base_data_obj import BaseDataObj
-from specula.data_objects.ifunc_inv import IFuncInv
+from specula.data_objects.ifunc_inv import IFuncInv, cut_modes
 from astropy.io import fits
 
 from specula.lib.compute_zonal_ifunc import compute_zonal_ifunc
-
 from specula.lib.compute_zern_ifunc import compute_zern_ifunc
+
 
 def compute_kl_ifunc(*args, **kwargs):
     raise NotImplementedError
+
 
 def compute_mixed_ifunc(*args, **kwargs):
     raise NotImplementedError
 
 
 class IFunc(BaseDataObj):
-    '''
-    Influence functions are stored as [modes, pixels]
-    '''
+    """
+    Influence functions data object.
+    This class holds the influence function matrix and the corresponding mask.
+    Influence functions data are stored as [modes, pixels].
+    """
     def __init__(self,
                  ifunc=None,
                  type_str: str=None,
@@ -72,10 +75,11 @@ class IFunc(BaseDataObj):
             elif type_lower == 'zonal':
                 if n_act is None:
                     raise ValueError('nact parameter is mandatory with type "zonal"')
-                ifunc, mask = compute_zonal_ifunc(npixels, n_act, circ_geom=circ_geom, angle_offset=angle_offset, do_mech_coupling=do_mech_coupling,
-                                                  coupling_coeffs=coupling_coeffs, do_slaving=do_slaving, slaving_thr=slaving_thr,
-                                                  obsratio=obsratio, diaratio=diaratio, mask=mask, xp=self.xp, dtype=self.dtype,
-                                                  return_coordinates=False)
+                ifunc, mask, _, _ = compute_zonal_ifunc(npixels, n_act, circ_geom=circ_geom,
+                                                  angle_offset=angle_offset, do_mech_coupling=do_mech_coupling,
+                                                  coupling_coeffs=coupling_coeffs, do_slaving=do_slaving,
+                                                  slaving_thr=slaving_thr, obsratio=obsratio, diaratio=diaratio,
+                                                  mask=mask, xp=self.xp, dtype=self.dtype)
             else:
                 raise ValueError(f'Invalid ifunc type {type_str}')
 
@@ -127,6 +131,12 @@ class IFunc(BaseDataObj):
     def size(self):
         return self._influence_function.shape
 
+    def nmodes(self):
+        return self._influence_function.shape[0]
+
+    def npoints(self):
+        return self._influence_function.shape[1]
+
     @property
     def type(self):
         return self._influence_function.dtype
@@ -141,6 +151,9 @@ class IFunc(BaseDataObj):
             f"Error: input array shape {v.shape} does not match influence function shape {self._influence_function.shape}"
 
         self._influence_function[:] = self.to_xp(v)
+
+    def cut(self, start_mode=None, nmodes=None, idx_modes=None):
+        self.influence_function = cut_modes(self.influence_function, start_mode=start_mode, nmodes=nmodes, idx_modes=idx_modes)
 
     def ifunc_2d_to_3d(self, normalize=True):
         '''Convert a 2D influence function to a 3D array using a mask.'''
@@ -158,9 +171,22 @@ class IFunc(BaseDataObj):
 
         return ifunc_3d
 
-    def inverse(self):
-        inv = self.xp.linalg.pinv(self._influence_function)
-        return IFuncInv(inv, mask=self._mask_inf_func, precision=self.precision, target_device_idx=self.target_device_idx)
+    def inverse(self, nmodes=None, remove_piston=True):
+        """Return the pseudoinverse of the influence function.
+
+        When ``remove_piston`` is True, each mode is centered by subtracting
+        its mean value before computing the pseudoinverse.
+        """
+        ifunc = self._influence_function
+        if nmodes is not None and nmodes != self.nmodes():
+            ifunc = cut_modes(ifunc, nmodes=nmodes)
+
+        if remove_piston:
+            ifunc = ifunc - self.xp.mean(ifunc, axis=1, keepdims=True)
+
+        inv = self.xp.linalg.pinv(ifunc)
+        return IFuncInv(inv, mask=self._mask_inf_func, precision=self.precision,
+                        target_device_idx=self.target_device_idx)
 
     @staticmethod
     def from_header(hdr):
@@ -179,28 +205,6 @@ class IFunc(BaseDataObj):
         hdul.append(fits.ImageHDU(data=cpuArray(self._mask_inf_func), name='MASK_INF_FUNC'))
         hdul.writeto(filename, overwrite=overwrite)
         hdul.close()  # Force close for Windows
-
-    def cut(self, start_mode=None, nmodes=None, idx_modes=None):
-
-        if idx_modes is not None:
-            if start_mode is not None:
-                start_mode = None
-                print('ifunc.cut: start_mode cannot be set together with idx_modes. Setting to None start_mode.')
-            if nmodes is not None:
-                nmodes = None
-                print('ifunc.cut: nmodes cannot be set together with idx_modes. Setting to None nmodes.')
-
-        nrows, ncols = self.influence_function.shape
-
-        if start_mode is None:
-            start_mode = 0
-        if nmodes is None:
-            nmodes = nrows
-
-        if idx_modes is not None:
-            self._influence_function = self._influence_function[idx_modes, :]
-        else:
-            self._influence_function = self._influence_function[start_mode:nmodes, :]
 
     @staticmethod
     def restore(filename, target_device_idx=None, exten=1):

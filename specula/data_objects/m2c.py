@@ -1,12 +1,17 @@
 
-import numpy as np
 from astropy.io import fits
 
 from specula import cpuArray
+from specula.data_objects.ifunc_inv import cut_modes
 from specula.base_data_obj import BaseDataObj
 
 
 class M2C(BaseDataObj):
+    """
+    Modal to Command (M2C) matrix data object.
+    This class holds the M2C matrix, which is used to convert modal coefficients to actuator commands.
+    The M2C matrix is stored as [actuators, modes].
+    """
     def __init__(self,
                  m2c,
                  nmodes: int=None,
@@ -30,7 +35,7 @@ class M2C(BaseDataObj):
 
     def set_value(self, v):
         '''
-        Set new values for the m2c matrix field    
+        Set new values for the m2c matrix field
         Arrays are not reallocated
         '''
         assert v.shape == self.m2c.shape, \
@@ -45,26 +50,7 @@ class M2C(BaseDataObj):
         self.m2c = self.m2c[:, :nmodes]
 
     def cut(self, start_mode=None, nmodes=None, idx_modes=None):
-
-        if idx_modes is not None:
-            if start_mode is not None:
-                start_mode = None
-                print('m2c.cut: start_mode cannot be set together with idx_modes. Setting to None start_mode.')
-            if nmodes is not None:
-                nmodes = None
-                print('m2c.cut: nmodes cannot be set together with idx_modes. Setting to None nmodes.')
-                        
-        nrows, ncols = self.m2c.shape
-
-        if start_mode is None:
-            start_mode = 0
-        if nmodes is None:
-            nmodes = ncols
-
-        if idx_modes is not None:
-            self.m2c = self.m2c[:, idx_modes]
-        else:
-            self.m2c = self.m2c[:, start_mode:nmodes]
+        self.m2c = cut_modes(self.m2c, start_mode=start_mode, nmodes=nmodes, idx_modes=idx_modes, modes_on_first_axis=False)
 
     @staticmethod
     def from_header(hdr, target_device_idx=None):
@@ -78,8 +64,11 @@ class M2C(BaseDataObj):
     def save(self, filename, overwrite:bool=False):
         """Saves the M2C to a file."""
         hdr = self.get_fits_header()
-        fits.writeto(filename, np.zeros(2), hdr, overwrite=overwrite)
-        fits.append(filename, cpuArray(self.m2c))
+        hdu = fits.PrimaryHDU(header=hdr)
+        hdul = fits.HDUList([hdu])
+        hdul.append(fits.ImageHDU(data=cpuArray(self.m2c)))
+        hdul.writeto(filename, overwrite=overwrite)
+        hdul.close()
 
     @staticmethod
     def restore(filename, target_device_idx=None):
@@ -90,5 +79,5 @@ class M2C(BaseDataObj):
             version = hdr.get('VERSION')
             if version != 1:
                 raise ValueError(f"Unknown version {version} in file {filename}")
-            m2c = hdul[1].data
+            m2c = hdul[1].data.copy()
         return M2C(m2c=m2c, target_device_idx=target_device_idx)

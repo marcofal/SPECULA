@@ -2,6 +2,8 @@
 import os
 from astropy.io import fits
 
+from specula.log import get_specula_logger
+
 
 class CalibManager():
     def __init__(self, root_dir):
@@ -16,21 +18,30 @@ class CalibManager():
             'phasescreen': 'phasescreens/',
             'AtmoRandomPhase': 'phasescreens/',
             'AtmoEvolution': 'phasescreens/',
+            'AtmoEvolutionUpDown': 'phasescreens/',
             'AtmoInfiniteEvolution': 'phasescreens/',
+            'AtmoInfiniteEvolutionUpDown': 'phasescreens/',
             'slopenull': 'slopenulls/',
             'SnCalibrator': 'slopenulls/',
             'sn': 'slopenulls/',
             'background': 'backgrounds/',
             'pupils': 'pupils/',
             'pupdata': 'pupils',
+            'PupData': 'pupils',
             'PyrPupdataCalibrator': 'pupils/',
+            'DynamicPyrPupdataCalibrator': 'pupils/',
+            'DynamicDarkCalibrator': 'dark/',
             'subapdata': 'subapdata/',
             'ShSubapCalibrator': 'subapdata/',
             'iir_filter_data': 'filter/',
             'IirFilterData': 'filter/',
+            'ssr_filter_data': 'filter/',
+            'SsrFilterData': 'filter/',
             'rec': 'rec/',
             'recmat': 'rec/',
+            'Recmat': 'rec/',
             'intmat': 'im/',
+            'Intmat': 'im/',
             'ImCalibrator': 'im/',
             'MultiImCalibrator': 'im/',
             'projmat': 'rec/',
@@ -40,6 +51,7 @@ class CalibManager():
             'ifunc': 'ifunc/',
             'IFunc': 'ifunc/',
             'ifunc_inv': 'ifunc/',
+            'IFuncInv': 'ifunc/',
             'm2c': 'm2c/',
             'M2C': 'm2c/',
             'filter': 'filter/',
@@ -53,14 +65,25 @@ class CalibManager():
             'pupilstop': 'pupilstop/',
             'Pupilstop': 'pupilstop/',
             'maskef': 'maskef/',
+            'ElectricField': 'ef/',
+            'Intensity': 'intensity/',
+            'LaserLaunchTelescope': 'data/',
+            'Lenslet': 'lenslet/',
+            'Phasescreen': 'phasescreens/',
+            'Pixels': 'pixels/',
+            'Slopes': 'slopes/',
             'TimeHistory': 'data/',
             'time_hist': 'data/',
+            'Source': 'data/',
+            'SpatioTempArray': 'arrays/',
+            'SubapData': 'subapdata/',
             'vibrations': 'vibrations/',
             'Layer': 'layers/',
             'data': 'data/',
             'projection': 'popt/'
         }
         self.root_dir = root_dir
+        self.logger = get_specula_logger('specula.calib_manager')
 
     def root_subdir(self, type):
         """
@@ -114,7 +137,7 @@ class CalibManager():
             array-like: The data read from the file.
         """
         filename = self.filename(subdir, name)
-        print('Reading:', filename)
+        self.logger.info(f'Reading: {filename}')
         if not os.path.exists(filename):
             raise FileNotFoundError(filename)
         return fits.getdata(filename)

@@ -1,8 +1,9 @@
-
 import specula
 specula.init(0)  # Default target device
 
 import unittest
+import os
+import glob
 
 from specula import np
 from specula import cpuArray
@@ -17,6 +18,13 @@ from specula.processing_objects.sh_slopec import ShSlopec
 from test.specula_testlib import cpu_and_gpu
 
 class TestShSlopec(unittest.TestCase):
+
+    @classmethod
+    def tearDownClass(cls):
+        test_dir = os.path.dirname(__file__)
+        for fpath in glob.glob(os.path.join(test_dir, 'ConvolutionKernel*.fits')):
+            if os.path.isfile(fpath):
+                os.remove(fpath)
 
     def get_sh(self, target_device_idx, xp, with_laser_launch=False):
         # pupil is 1m
@@ -251,6 +259,48 @@ class TestShSlopec(unittest.TestCase):
 
         np.testing.assert_equal(cpuArray(last_weights_2d), cpuArray(expected_weights), err_msg="Weight map does not match expected values.")
 
+    @cpu_and_gpu
+    def test_vec_wei_pix_rad_t_uses_last_valid_time(self, target_device_idx, xp):
+        """
+        Test that vecWeiPixRadT selects the last valid row based on time.
+        """
+        t_sh = int(1e9)
+        t_slopec = int(2e9)
+
+        sh, v, m, flat_ef, subapdata = self.get_sh(target_device_idx, xp, with_laser_launch=False)
+
+        sh.inputs['in_ef'].set(flat_ef)
+        sh.setup()
+        sh.check_ready(t_sh)
+        sh.trigger()
+        sh.post_trigger()
+
+        intensity = sh.outputs['out_i'].i.copy()
+
+        pixels = Pixels(*intensity.shape, target_device_idx=target_device_idx)
+        pixels.pixels = intensity
+        pixels.generation_time = t_slopec
+
+        vec_wei_pix_rad_t = xp.asarray([
+            [0.5, 0.2],
+            [1.5, 1.0],
+            [3.0, 3.0],
+        ])
+
+        slopec = ShSlopec(subapdata, vecWeiPixRadT=vec_wei_pix_rad_t,
+                          target_device_idx=target_device_idx)
+        slopec.inputs['in_pixels'].set(pixels)
+        slopec.check_ready(t_slopec)
+        slopec.trigger()
+        slopec.post_trigger()
+
+        # At t=2.0 s, rows at 0.2 s and 1.0 s are valid, so selected radius must be 1.5.
+        self.assertAlmostEqual(float(slopec.weighted_pix_rad), 1.5)
+
+        expected = ShSlopec(subapdata, weightedPixRad=1.5, target_device_idx=target_device_idx)
+        np.testing.assert_allclose(cpuArray(slopec.mask_weighted),
+                                   cpuArray(expected.mask_weighted), atol=1e-6)
+
 
     @cpu_and_gpu
     def test_shslopec_slopesnull(self, target_device_idx, xp):
@@ -398,3 +448,54 @@ class TestShSlopec(unittest.TestCase):
         self.assertEqual(slopec.outputs['out_flux_per_subaperture'].generation_time, t)
         self.assertEqual(slopec.outputs['out_total_counts'].generation_time, t)
         self.assertEqual(slopec.outputs['out_subap_counts'].generation_time, t)
+
+    @cpu_and_gpu
+    def test_slopec_interleave(self, target_device_idx, xp):
+        """
+        Test that verifies the interleave option in Slopec.
+        """
+        t = 1
+        sh, v, m, flat_ef, subapdata = self.get_sh(target_device_idx, xp, with_laser_launch=False)
+
+        sh.inputs['in_ef'].set(flat_ef)
+        sh.setup()
+        sh.check_ready(t)
+        sh.trigger()
+        sh.post_trigger()
+
+        intensity = sh.outputs['out_i'].i.copy()
+
+        # Compute slopes using ShSlopec
+        pixels = Pixels(*intensity.shape, target_device_idx=target_device_idx)
+        pixels.pixels = intensity
+        pixels.generation_time = t
+
+        # Non-interleaved
+        slopec_non = ShSlopec(subapdata, interleave=False, target_device_idx=target_device_idx)
+        slopec_non.inputs['in_pixels'].set(pixels)
+        slopec_non.check_ready(t)
+        slopec_non.trigger()
+        slopec_non.post_trigger()
+
+        # Interleaved
+        slopec_int = ShSlopec(subapdata, interleave=True, target_device_idx=target_device_idx)
+        slopec_int.inputs['in_pixels'].set(pixels)
+        slopec_int.check_ready(t)
+        slopec_int.trigger()
+        slopec_int.post_trigger()
+
+        # Verify that both compute the same xslopes and yslopes values
+        np.testing.assert_array_almost_equal(cpuArray(slopec_non.slopes.xslopes),
+                                             cpuArray(slopec_int.slopes.xslopes))
+        np.testing.assert_array_almost_equal(cpuArray(slopec_non.slopes.yslopes),
+                                             cpuArray(slopec_int.slopes.yslopes))
+
+        # Verify that the internal layout is different (interleaved vs non-interleaved)
+        self.assertFalse(slopec_non.slopes.interleave)
+        self.assertTrue(slopec_int.slopes.interleave)
+
+        # Verify indices are different
+        np.testing.assert_array_equal(cpuArray(slopec_non.slopes.indx()),
+                                      cpuArray(xp.arange(0, len(m))))
+        np.testing.assert_array_equal(cpuArray(slopec_int.slopes.indx()),
+                                      cpuArray(xp.arange(0, len(m)*2, 2)))

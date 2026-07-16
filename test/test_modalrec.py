@@ -1,23 +1,27 @@
-
 import specula
 specula.init(0)  # Default target device
 
 import unittest
 
 from specula.processing_objects.modalrec import Modalrec
+from specula.processing_objects.modalrec_explicit_polc import ModalrecExplicitPolc
 from specula.processing_objects.modalrec_implicit_polc import ModalrecImplicitPolc
 from specula.data_objects.recmat import Recmat
 from specula.data_objects.intmat import Intmat
 from specula.data_objects.slopes import Slopes
 from specula.base_value import BaseValue
+from specula.loop_control import LoopControl
 
 from test.specula_testlib import cpu_and_gpu
+
+import gc
+import tracemalloc
 
 class TestModalrec(unittest.TestCase):
 
     @cpu_and_gpu
     def test_modalrec_wrong_size(self, target_device_idx, xp):
-        
+
         recmat = Recmat(xp.arange(12).reshape((3,4)), target_device_idx=target_device_idx)
         rec = Modalrec(recmat=recmat, target_device_idx=target_device_idx)
 
@@ -62,47 +66,47 @@ class TestModalrec(unittest.TestCase):
 
         # commands:
         commands_list = [0.1, 0.2, 0.3, 0.4]
-        commands    = BaseValue('commands', value=xp.array(commands_list), target_device_idx=target_device_idx)
-        commands_ip = BaseValue('commands', value=xp.array(commands_list), target_device_idx=target_device_idx)
+        commands    = BaseValue('commands', value=xp.array(commands_list),
+                                target_device_idx=target_device_idx)
+        commands_ip = BaseValue('commands', value=xp.array(commands_list),
+                                target_device_idx=target_device_idx)
         commands.generation_time = 0
         commands_ip.generation_time = 0
 
         # Modalrec standard (POLC)
-        rec = Modalrec(
+        rec = ModalrecExplicitPolc(
             recmat=recmat,
             projmat=projmat,
             intmat=intmat,
-            polc=True,
-            in_commands_size=4,
             target_device_idx=target_device_idx
         )
         rec.inputs['in_slopes'].set(slopes)
         rec.inputs['in_commands'].set(commands)
-        rec.setup()
-        rec.prepare_trigger(0)
-        rec.trigger_code()
-        out1 = rec.modes.value.copy()
 
         # ModalrecImplicitPolc
         rec2 = ModalrecImplicitPolc(
             recmat=recmat,
             projmat=projmat,
             intmat=intmat,
-            in_commands_size=4,
             target_device_idx=target_device_idx
         )
         rec2.inputs['in_slopes'].set(slopes_ip)
         rec2.inputs['in_commands'].set(commands_ip)
-        rec2.setup()
-        rec2.prepare_trigger(0)
-        rec2.trigger_code()
+
+        loop = LoopControl()
+        loop.add(rec, idx=0)
+        loop.add(rec2, idx=0)
+
+        loop.run(dt=1, run_time=1)
+
+        out1 = rec.modes.value.copy()
         out2 = rec2.modes.value.copy()
 
         xp.testing.assert_allclose(out1, out2, rtol=1e-10, atol=1e-12)
 
     @cpu_and_gpu
     def test_modalrec_polc_wrong_size(self, target_device_idx, xp):
-        
+
         # intmat which expects 4 commands and produces 6 slopes
         intmat_arr = xp.array([
                             [1, 0,  1,  1],
@@ -113,7 +117,7 @@ class TestModalrec(unittest.TestCase):
                             [0, 1, -1, -1]
                         ])
         intmat = Intmat(intmat_arr, target_device_idx=target_device_idx)
-        
+
         # recmat: pseudo-inverse of intmat (shape 4x6)
         recmat_arr = xp.linalg.pinv(intmat_arr)
         recmat = Recmat(recmat_arr, target_device_idx=target_device_idx)
@@ -123,19 +127,17 @@ class TestModalrec(unittest.TestCase):
         projmat = Recmat(projmat_arr, target_device_idx=target_device_idx)
 
         # Create a Modalrec which expects 6 slopes and 4 commands
-        rec = Modalrec(
-            nmodes=4,
+        rec = ModalrecExplicitPolc(
             recmat=recmat,
             intmat=intmat,
             projmat=projmat,
-            polc=True,
-            in_commands_size=4,
             target_device_idx=target_device_idx
         )
 
         # Slopes with wrong size (5 instead of 6)
         slopes = Slopes(slopes=xp.arange(5), target_device_idx=target_device_idx)
-        commands = BaseValue('commands', value=xp.array([0.1, 0.2, 0.3, 0.4]), target_device_idx=target_device_idx)
+        commands = BaseValue('commands', value=xp.array([0.1, 0.2, 0.3, 0.4]),
+                             target_device_idx=target_device_idx)
 
         rec.inputs['in_slopes'].set(slopes)
         rec.inputs['in_commands'].set(commands)
@@ -144,13 +146,283 @@ class TestModalrec(unittest.TestCase):
         slopes.generation_time = t
         commands.generation_time = t
 
-        rec.setup()
-
-        # We expect a ValueError during prepare_trigger due to size mismatch
+        # We expect a ValueError during setup due to size mismatch
         with self.assertRaises(ValueError) as cm:
-            rec.prepare_trigger(t)
+            rec.setup()
 
         # Verify that the error message is as expected
         self.assertIn("Dimension mismatch in POLC mode", str(cm.exception))
         self.assertIn("intmat @ commands will produce 6 slopes", str(cm.exception))
         self.assertIn("but input slopes has size 5", str(cm.exception))
+
+    @cpu_and_gpu
+    def test_modalrec_implicit_polc_memory_cleanup(self, target_device_idx, xp):
+        """Test that matrices are properly deleted to free memory"""
+
+        # Start memory tracking BEFORE creating any matrices
+        if target_device_idx == -1:
+            tracemalloc.start()
+            gc.collect()
+
+        # Create test matrices with correct dimensions
+        n_slopes = 1000
+        n_modes = 100
+
+        intmat_arr = xp.random.randn(n_slopes, n_modes)
+        recmat_arr = xp.random.randn(n_modes, n_slopes)
+        projmat_arr = xp.random.randn(n_modes, n_modes)
+
+        intmat = Intmat(intmat_arr, target_device_idx=target_device_idx)
+        recmat = Recmat(recmat_arr, target_device_idx=target_device_idx)
+        projmat = Recmat(projmat_arr, target_device_idx=target_device_idx)
+
+        # Track memory for GPU only
+        if target_device_idx != -1: # pragma: no cover
+            import cupy as cp
+            mempool = cp.get_default_memory_pool()
+            mempool.free_all_blocks()
+            mem_before = mempool.used_bytes()
+        else:
+            mem_before = tracemalloc.get_traced_memory()[0]
+
+        # Create ModalrecImplicitPolc - should delete recmat, projmat, intmat internals
+        rec = ModalrecImplicitPolc(
+            recmat=recmat,
+            projmat=projmat,
+            intmat=intmat,
+            target_device_idx=target_device_idx
+        )
+
+        del intmat_arr
+        del projmat_arr
+        del recmat_arr
+        del intmat
+        del projmat
+        del recmat
+
+        # Check that the merged matrices exist correctly
+        self.assertIsNotNone(rec.recmat) # recmat now hosts C
+        self.assertIsNotNone(rec.h_mat)
+
+        # Check that original matrices were never saved as class attributes
+        self.assertFalse(hasattr(rec, 'projmat'))
+        self.assertFalse(hasattr(rec, 'intmat'))
+        self.assertFalse(hasattr(rec, 'comm_mat')) # comm_mat is replaced by recmat
+
+        # Verify shapes
+        # recmat (which is comm_mat) = projmat @ recmat = (n_modes, n_modes) @ (n_modes, n_slopes)
+        #          = (n_modes, n_slopes)
+        self.assertEqual(rec.recmat.recmat.shape, (n_modes, n_slopes))
+        # h_mat = I - comm_mat @ intmat = (n_modes, n_modes)
+        self.assertEqual(rec.h_mat.recmat.shape, (n_modes, n_modes))
+
+        # Memory tracking
+        if target_device_idx != -1: # pragma: no cover
+            gc.collect()
+            mempool.free_all_blocks()
+            mem_after = mempool.used_bytes()
+        else:
+            gc.collect()
+            mem_after = tracemalloc.get_traced_memory()[0]
+            tracemalloc.stop()
+
+        verbose = False
+        if verbose: # pragma: no cover
+            print(f"{'GPU' if target_device_idx != -1 else 'CPU'} Memory before:"
+                f" {mem_before} bytes, after: {mem_after} bytes")
+
+        bytes_per_element = 4  # float32
+
+        # Original matrices total: recmat + projmat + intmat
+        original_mem = (n_modes * n_slopes + n_modes * n_modes + n_slopes * n_modes) \
+                        * bytes_per_element
+        # New matrices total: comm_mat + h_mat
+        new_mem = (n_modes * n_slopes + n_modes * n_modes) * bytes_per_element
+        # Expected savings: intmat memory
+        expected_savings = (n_slopes * n_modes) * bytes_per_element
+
+        if verbose: # pragma: no cover
+            print(f"Original matrices size: {original_mem} bytes")
+            print(f"New matrices size: {new_mem} bytes")
+            print(f"Expected net savings: {expected_savings} bytes")
+            print(f"Actual memory change: {mem_after - mem_before:+} bytes")
+
+        # Memory should not increase significantly
+        # Allow more tolerance for CPU due to Python memory management
+        tolerance_factor = 2.0 if target_device_idx == -1 else 1.5
+        max_increase = new_mem * tolerance_factor
+
+        self.assertLess(mem_after - mem_before, max_increase,
+                       f"Memory increased by {mem_after - mem_before} bytes, "
+                       f"expected less than {max_increase} bytes")
+
+
+    @cpu_and_gpu
+    def test_modalrec_implicit_polc_no_commands_first_step(self, target_device_idx, xp):
+        """Test that implicit POLC works with no commands on first step"""
+
+        intmat_arr = xp.array([[1, 0], [0, 1], [1, 1]])
+        recmat_arr = xp.linalg.pinv(intmat_arr)
+        projmat_arr = xp.eye(2)
+
+        intmat = Intmat(intmat_arr, target_device_idx=target_device_idx)
+        recmat = Recmat(recmat_arr, target_device_idx=target_device_idx)
+        projmat = Recmat(projmat_arr, target_device_idx=target_device_idx)
+
+        rec = ModalrecImplicitPolc(
+            recmat=recmat,
+            projmat=projmat,
+            intmat=intmat,
+            target_device_idx=target_device_idx
+        )
+
+        slopes = Slopes(slopes=xp.array([1.0, 2.0, 3.0]),
+                        target_device_idx=target_device_idx)
+        slopes.generation_time = 0
+
+        # Add commands input with None value to simulate first step
+        commands = BaseValue('commands', value=None, target_device_idx=target_device_idx)
+        commands.generation_time = 0
+
+        rec.inputs['in_slopes'].set(slopes)
+        rec.inputs['in_commands'].set(commands)
+
+        loop = LoopControl()
+        loop.add(rec, idx=0)
+        loop.run(run_time=1, dt=1)
+
+        # Should not crash and produce valid output
+        self.assertEqual(rec.modes.value.shape[0], 2)
+        self.assertIsNotNone(rec.modes.value)
+
+    @cpu_and_gpu
+    def test_modalrec_implicit_polc_matrix_shapes(self, target_device_idx, xp):
+        """Verify that comm_mat and h_mat have correct shapes"""
+
+        n_slopes = 100
+        n_modes = 50
+
+        intmat_arr = xp.random.randn(n_slopes, n_modes)
+        recmat_arr = xp.random.randn(n_modes, n_slopes)
+        projmat_arr = xp.eye(n_modes)
+
+        intmat = Intmat(intmat_arr, target_device_idx=target_device_idx)
+        recmat = Recmat(recmat_arr, target_device_idx=target_device_idx)
+        projmat = Recmat(projmat_arr, target_device_idx=target_device_idx)
+
+        rec = ModalrecImplicitPolc(
+            recmat=recmat,
+            projmat=projmat,
+            intmat=intmat,
+            target_device_idx=target_device_idx
+        )
+
+        # recmat hosts C, so it should be (n_modes, n_slopes)
+        self.assertEqual(rec.recmat.recmat.shape, (n_modes, n_slopes))
+
+        # h_mat should be (n_modes, n_modes)
+        self.assertEqual(rec.h_mat.recmat.shape, (n_modes, n_modes))
+
+    @cpu_and_gpu
+    def test_modalrec_explicit_no_intmat(self, target_device_idx, xp):
+        """Test explicit POLC without interaction matrix"""
+
+        # Recmat 4x6, Projmat 4x4 (identity * 2)
+        recmat_arr = xp.random.randn(4, 6)
+        projmat_arr = xp.eye(4) * 2
+
+        recmat = Recmat(recmat_arr, target_device_idx=target_device_idx)
+        projmat = Recmat(projmat_arr, target_device_idx=target_device_idx)
+
+        # Istance of ModalrecExplicitPolc without intmat
+        rec = ModalrecExplicitPolc(
+            recmat=recmat,
+            projmat=projmat,
+            intmat=None,
+            target_device_idx=target_device_idx
+        )
+
+        slopes_arr = xp.random.randn(6)
+        cmd_arr = xp.random.randn(4)
+
+        slopes = Slopes(slopes=slopes_arr, target_device_idx=target_device_idx)
+        commands = BaseValue('commands', value=cmd_arr, target_device_idx=target_device_idx)
+
+        rec.inputs['in_slopes'].set(slopes)
+        rec.inputs['in_commands'].set(commands)
+
+        t = 0
+        slopes.generation_time = t
+        commands.generation_time = t
+
+        rec.setup()
+        rec.prepare_trigger(t)
+        rec.trigger_code()
+
+        # Manual check of math: P @ (R @ s) - c
+        expected = (projmat_arr @ (recmat_arr @ slopes_arr)) - cmd_arr
+
+        xp.testing.assert_allclose(rec.modes.value, expected, rtol=1e-7)
+
+    @cpu_and_gpu
+    def test_modalrec_explicit_no_projmat_and_aliasing(self, target_device_idx, xp):
+        """
+        Test explicit POLC without a projection matrix, and verify the memory 
+        aliasing fix (preventing pseudo_ol_modes from being modified in-place).
+        """
+
+        # Dimensions: 4 modes, 6 slopes
+        recmat_arr = xp.random.randn(4, 6)
+        intmat_arr = xp.random.randn(6, 4)
+
+        recmat = Recmat(recmat_arr, target_device_idx=target_device_idx)
+        intmat = Intmat(intmat_arr, target_device_idx=target_device_idx)
+
+        # Initialize without projmat! This triggers the internal use of .copy()
+        rec = ModalrecExplicitPolc(
+            recmat=recmat,
+            projmat=None,
+            intmat=intmat,
+            target_device_idx=target_device_idx
+        )
+
+        # Controlled input arrays. We use non-zero numbers so the subtraction 
+        # actually changes the values, making the aliasing test effective.
+        slopes_arr = xp.ones(6, dtype=xp.float32) * 2.0
+        cmd_arr = xp.ones(4, dtype=xp.float32) * 0.5
+
+        slopes = Slopes(slopes=slopes_arr, target_device_idx=target_device_idx)
+        commands = BaseValue('commands', value=cmd_arr, target_device_idx=target_device_idx)
+
+        slopes.generation_time = 0
+        commands.generation_time = 0
+
+        rec.inputs['in_slopes'].set(slopes)
+        rec.inputs['in_commands'].set(commands)
+
+        loop = LoopControl()
+        loop.add(rec, idx=0)
+        loop.run(dt=1, run_time=1)
+
+        # -- MATH AND ALIASING VERIFICATION --
+
+        # 1. Expected calculation for pseudo open-loop: R @ (s + D @ c)
+        expected_pseudo = recmat_arr @ (slopes_arr + intmat_arr @ cmd_arr)
+
+        # 2. Expected calculation for output: pseudo_ol_modes - c
+        # (without P, it is a simple subtraction)
+        expected_out = expected_pseudo - cmd_arr
+
+        # Test 1: Are the pseudo open loop modes intact?
+        # If the .copy() fix were missing, this test would fail because expected_pseudo
+        # would undergo the commands subtraction due to the memory reference.
+        xp.testing.assert_allclose(rec.pseudo_ol_modes.value, expected_pseudo, rtol=1e-5)
+
+        # Test 2: Is the final output correct?
+        xp.testing.assert_allclose(rec.modes.value, expected_out, rtol=1e-5)
+
+        # Test 3: Absolute guarantee against aliasing
+        # Ensure that the two arrays in memory are actually different
+        # (since the commands are not zero)
+        with self.assertRaises(AssertionError):
+            xp.testing.assert_allclose(rec.pseudo_ol_modes.value, rec.modes.value)

@@ -1,10 +1,7 @@
-
-
 import specula
 specula.init(0)  # Default target device
 
 import os
-import sys
 import unittest
 
 from specula import np
@@ -172,20 +169,6 @@ class TestIntmat(unittest.TestCase):
         c_noise = 1
         rec = intmat.generate_rec_mmse(r0, L0, diameter, modal_base, c_noise, nmodes=None, m2c=None)
         assert isinstance(rec, Recmat)
-
-    @cpu_and_gpu
-    def test_build_from_slopes(self, target_device_idx, xp):
-        times = [0, 1, 2]
-        slopes = {
-            t: xp.array([1.0, 2.0, 3.0]) for t in times
-        }
-        disturbance = {
-            t: xp.array([1.0, -1.0, 1.0]) for t in times
-        }
-        im = Intmat.build_from_slopes(slopes, disturbance)
-        assert isinstance(im, Intmat)
-        assert im.intmat.shape == (3, 3)
-        assert xp.all(im.intmat[:, 0] != 0)
 
 
 class TestIntmatViews(unittest.TestCase):

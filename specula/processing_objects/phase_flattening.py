@@ -1,11 +1,12 @@
 from specula.connections import InputValue
 from specula.data_objects.electric_field import ElectricField
-from specula.base_processing_obj import BaseProcessingObj
+from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 
 
 class PhaseFlattening(BaseProcessingObj):
     """
-    Removes the mean phase from an electric field.
+    Phase flattening processing object.
+    Removes the mean phase from an input electric field.
     """
     def __init__(self,
                  target_device_idx: int = None,
@@ -25,6 +26,14 @@ class PhaseFlattening(BaseProcessingObj):
 
         self.outputs['out_ef'] = self._out_ef
 
+    @classmethod
+    def input_names(cls):
+        return {'in_ef': InputDesc(ElectricField, 'Input electric field whose mean phase will be removed')}
+
+    @classmethod
+    def output_names(cls):
+        return {'out_ef': OutputDesc(ElectricField, 'Output electric field with flattened (mean-removed) phase')}
+
     def setup(self):
         super().setup()
         
@@ -32,8 +41,8 @@ class PhaseFlattening(BaseProcessingObj):
         in_ef = self.local_inputs['in_ef']
 
         self._out_ef.resize(
-            dimx=in_ef.A.shape[0],
-            dimy=in_ef.A.shape[1],
+            dimx=in_ef.A.shape[1],
+            dimy=in_ef.A.shape[0],
             pitch=in_ef.pixel_pitch,
         )
 

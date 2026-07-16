@@ -1,4 +1,3 @@
-
 import specula
 specula.init(0)  # Default target device
 
@@ -40,10 +39,21 @@ class TestIFunv(unittest.TestCase):
     def test_ifunc_inv_data(self, target_device_idx, xp):
         '''Test that the inversion in IFunc is correct'''
         ifunc = IFunc(self.data, mask=self.mask, target_device_idx=target_device_idx)
-        inv = ifunc.inverse()
+        inv = ifunc.inverse(remove_piston=False)
         assert isinstance(inv, IFuncInv)
 
         np.testing.assert_array_almost_equal(cpuArray(self.inv_data), cpuArray(inv.ifunc_inv))
+
+    @cpu_and_gpu
+    def test_ifunc_inv_removes_global_piston_by_default(self, target_device_idx, xp):
+        '''Test that IFunc.inverse removes the per-mode mean by default'''
+        ifunc = IFunc(self.data, mask=self.mask, target_device_idx=target_device_idx)
+        centered = self.data - np.mean(self.data, axis=1, keepdims=True)
+        expected = np.linalg.pinv(centered)
+
+        inv = ifunc.inverse()
+
+        np.testing.assert_array_almost_equal(cpuArray(expected), cpuArray(inv.ifunc_inv))
 
     @cpu_and_gpu
     def test_ifunc_inv_idx(self, target_device_idx, xp):
@@ -70,7 +80,7 @@ class TestIFunv(unittest.TestCase):
         inv.save(self.inv_filename)
 
         ifunc = IFunc(self.data, mask=self.mask, target_device_idx=target_device_idx)
-        inv1 = ifunc.inverse()
+        inv1 = ifunc.inverse(remove_piston=False)
         inv2 = IFuncInv.restore(self.inv_filename)
 
         np.testing.assert_array_almost_equal(cpuArray(inv1.ifunc_inv), cpuArray(inv2.ifunc_inv))
@@ -78,6 +88,23 @@ class TestIFunv(unittest.TestCase):
         idx2 = cpuArray(inv2.idx_inf_func[0]), cpuArray(inv2.idx_inf_func[1])
         np.testing.assert_array_equal(idx1[0], idx2[0])
         np.testing.assert_array_equal(idx1[1], idx2[1])
+
+    @cpu_and_gpu
+    def test_inverse_with_nmodes_does_not_mutate_original(self, target_device_idx, xp):
+        ifunc = IFunc(self.data, mask=self.mask, target_device_idx=target_device_idx)
+        original_shape = ifunc.size
+
+        inv = ifunc.inverse(nmodes=1)
+
+        self.assertEqual(ifunc.size, original_shape)
+        self.assertEqual(inv.size, (self.data.shape[1], 1))
+
+    @cpu_and_gpu
+    def test_nmodes_and_npoints(self, target_device_idx, xp):
+        ifunc = IFunc(self.data, mask=self.mask, target_device_idx=target_device_idx)
+
+        self.assertEqual(ifunc.nmodes(), self.data.shape[0])
+        self.assertEqual(ifunc.npoints(), self.data.shape[1])
 
     @cpu_and_gpu
     def test_ifunc_2d_to_3d(self, target_device_idx, xp):
@@ -128,3 +155,135 @@ class TestIFunv(unittest.TestCase):
             # Normalized values should equal non-normalized values divided by RMS
             expected_normalized = values_no_norm / expected_rms[mode]
             np.testing.assert_array_almost_equal(values_norm, expected_normalized)
+
+    @cpu_and_gpu
+    def test_zonal_central_ifunc_position(self, target_device_idx, xp):
+        '''Test that central influence function is centered in the array'''
+        dim = 64
+        n_act = 9
+        mask = make_mask(dim)
+
+        # Test for different geometries
+        for circ_geom in [True, False]:
+            ifunc = IFunc(type_str='zonal', mask=mask, n_act=n_act, npixels=dim,
+                         circ_geom=circ_geom, target_device_idx=target_device_idx)
+
+            # Get the influence function cube
+            ifunc_3d = ifunc.ifunc_2d_to_3d(normalize=False)
+            ifunc_3d_cpu = cpuArray(ifunc_3d)
+
+            # For zonal, we need to find the central actuator
+            # The central IF should have its peak at the center
+            center = (dim - 1) / 2.0
+
+            # Find which IF has maximum value closest to center
+            peaks = np.array([np.unravel_index(np.argmax(ifunc_3d_cpu[:, :, i]),
+                                               ifunc_3d_cpu[:, :, i].shape)
+                             for i in range(ifunc_3d_cpu.shape[2])])
+
+            # Find actuator closest to center
+            distances_to_center = np.sqrt((peaks[:, 0] - center)**2 + (peaks[:, 1] - center)**2)
+            central_idx = np.argmin(distances_to_center)
+
+            # Get peak position of central IF
+            central_if = ifunc_3d_cpu[:, :, central_idx]
+            peak_pos = np.unravel_index(np.argmax(np.abs(central_if)), central_if.shape)
+
+            # Check that peak is close to center (within 0.5 pixel)
+            self.assertAlmostEqual(peak_pos[0], center, delta=0.5,
+                        msg=f"Central IF peak Y position not centered for {circ_geom} geometry")
+            self.assertAlmostEqual(peak_pos[1], center, delta=0.5,
+                        msg=f"Central IF peak X position not centered for {circ_geom} geometry")
+
+    @cpu_and_gpu
+    def test_zonal_edge_ifunc_rotation_symmetry(self, target_device_idx, xp):
+        '''Test that edge influence functions have rotational symmetry'''
+        dim = 64
+        n_act = 9
+        mask = make_mask(dim)
+
+        # Test for symmetric geometries
+        for circ_geom in [True, False]:
+            ifunc = IFunc(type_str='zonal', mask=mask, n_act=n_act, npixels=dim, 
+                         circ_geom=circ_geom, target_device_idx=target_device_idx)
+
+            # Get the influence function cube
+            ifunc_3d = ifunc.ifunc_2d_to_3d(normalize=False)
+            ifunc_3d_cpu = cpuArray(ifunc_3d)
+
+            # Find center and peak positions
+            center = np.array([(dim - 1) / 2.0, (dim - 1) / 2.0])
+            n_actuators = ifunc_3d_cpu.shape[2]
+
+            # Get peak position for each actuator
+            peaks = np.array([np.unravel_index(np.argmax(ifunc_3d_cpu[:, :, i]),
+                                               ifunc_3d_cpu[:, :, i].shape)
+                             for i in range(n_actuators)])
+
+            # Find pairs of opposite actuators (180deg rotation)
+            tested_pairs = 0
+
+            for i in range(n_actuators):
+                pos_i = peaks[i]
+                # Calculate 180deg rotated position
+                pos_i_rotated = 2 * center - pos_i
+
+                # Find actuator with peak closest to rotated position
+                distances = np.sqrt(np.sum((peaks - pos_i_rotated)**2, axis=1))
+                j = np.argmin(distances)
+
+                # Only test if we found a true opposite (distance to rotated pos < 1.5 pixels)
+                # i < j to avoid testing same pair twice
+                if distances[j] < 1.5 and i != j and i < j:
+                    if_i = ifunc_3d_cpu[:, :, i]
+                    if_j = ifunc_3d_cpu[:, :, j]
+
+                    # Rotate if_j by 180deg
+                    if_j_rotated = np.rot90(if_j, k=2)
+
+                    # Compare using correlation in the mask region
+                    mask_cpu = cpuArray(mask)
+                    mask_idx = np.where(mask_cpu > 0)
+
+                    correlation = np.corrcoef(
+                        if_i[mask_idx].ravel(),
+                        if_j_rotated[mask_idx].ravel()
+                    )[0, 1]
+
+                    self.assertGreater(correlation, 0.999,
+                        msg=f"Low correlation ({correlation:.3f}) between opposite IFs {i} and {j}"
+                            f" for {circ_geom} geometry")
+                    tested_pairs += 1
+
+            # Make sure we actually tested some pairs
+            self.assertGreater(tested_pairs, 0,
+                             msg=f"No opposite actuator pairs found for {circ_geom} geometry")
+
+    @cpu_and_gpu
+    def test_cut_with_idx_modes(self, target_device_idx, xp):
+        '''Test that cutting modes with idx_modes works correctly'''
+        mask = make_mask(64)
+        ifunc = IFunc(type_str='zernike', mask=mask, nmodes=10, npixels=64, target_device_idx=target_device_idx)
+        original_ifunc = cpuArray(ifunc.influence_function)
+
+        # Cut to modes 2, 4, 6
+        idx_modes = [2, 4, 6]
+        ifunc.cut(idx_modes=idx_modes)
+
+        expected_ifunc = original_ifunc[idx_modes, :]
+        np.testing.assert_array_equal(cpuArray(ifunc.influence_function), expected_ifunc)
+
+    @cpu_and_gpu
+    def test_cut_with_mode_range(self, target_device_idx, xp):
+        '''Test that cutting modes with start_mode and nmodes works correctly'''
+        mask = make_mask(64)
+        ifunc = IFunc(type_str='zernike', mask=mask, nmodes=10, npixels=64, target_device_idx=target_device_idx)
+        original_ifunc = cpuArray(ifunc.influence_function)
+
+        # Cut to modes 3 to 7 (5 modes starting from mode 3)
+        start_mode = 3
+        nmodes = 5
+        ifunc.cut(start_mode=start_mode, nmodes=nmodes)
+
+        expected_ifunc = original_ifunc[start_mode:start_mode+nmodes, :]
+        np.testing.assert_array_equal(cpuArray(ifunc.influence_function), expected_ifunc)

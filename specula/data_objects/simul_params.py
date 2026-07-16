@@ -3,26 +3,11 @@ from specula.base_data_obj import BaseDataObj
 from typing import List
 
 class SimulParams(BaseDataObj):
-    '''
-    Simulation Parameters 
-    
-    args:
-    ----------
-    root_dir : str
-        The root dir for the simulation
-    pixel_pupil : int
-        The diameter in pixels of the simulation pupil
-    pixel_pitch : float
-        The dimension in meters of a pixel (telescope diameter = pixel_pupil * pixel_pitch)
-    total_time : float
-        The total time duration of the simulation in seconds
-    time_step : float
-        The duration of a single timestep in seconds (number of timesteps = int(total_time/time_step) )
-    zenithAngleInDeg : float
-        The zenith angle of the telescope in degrees
-    display_server : bool
-        Activate web server for simulation display
-    '''
+    """
+    Simulation Parameters data object.
+    This class holds the parameters of the simulation, such as pixel size,
+    time step, total time, zenith angle, etc.
+    """
     def __init__(self,
                 pixel_pupil: int = None,
                 pixel_pitch: float = None,
@@ -34,6 +19,28 @@ class SimulParams(BaseDataObj):
                 stepping: bool = False,
                 add_modules: List[str] = [],
     ):
+        """
+        Parameters
+        ----------
+        root_dir : str
+            The root dir for the simulation
+        pixel_pupil : int [pixel]
+            The diameter in pixels of the simulation pupil
+        pixel_pitch : float [m]
+            The dimension in meters of a pixel (telescope diameter = pixel_pupil * pixel_pitch)
+        total_time : float [s]
+            The total time duration of the simulation
+        time_step : float [s]
+            The duration of a single timestep in seconds (number of timesteps = int(total_time/time_step) )
+        zenithAngleInDeg : float [deg]
+            The zenith angle of the telescope
+        display_server : bool
+            Activate web server for simulation display
+        stepping: bool
+            Activate interactive single-stepping mode
+        add_modules: list of str
+            Optional additional modules to add to the search path when importing processing objects
+        """
         super().__init__()
 
         if not isinstance(add_modules, list):

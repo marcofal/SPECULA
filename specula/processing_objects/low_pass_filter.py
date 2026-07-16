@@ -2,17 +2,20 @@
 from specula.processing_objects.iir_filter import IirFilter
 from specula.data_objects.iir_filter_data import IirFilterData
 from specula.data_objects.simul_params import SimulParams
-    
+
+
 class LowPassFilter(IirFilter):
+    """
+    Low pass filter processing object.
+    Specialization of the IirFilter class, implementing a low pass filter.
+    """
     def __init__(self,
                  simul_params: SimulParams,
-                 cutoff_freq: float,    # TODO =1.0,           
+                 cutoff_freq: float,
                  amplif_fact: float=None,
                  n_ord: int=None,
                  n_modes: int=1,
                  delay: float=0,
-                 offset: list=None,
-                 og_shaper=None,
                  target_device_idx: int=None,
                  precision: int=None
                 ):
@@ -29,5 +32,13 @@ class LowPassFilter(IirFilter):
                                                         target_device_idx=target_device_idx , n_modes=n_modes)
 
         # Initialize IirFilter object
-        super().__init__(simul_params, iir_filter_data, delay=delay, offset=offset, og_shaper=og_shaper,
+        super().__init__(iir_filter_data, delay=delay,
                          target_device_idx=target_device_idx, precision=precision)
+
+    @classmethod
+    def input_names(cls):
+        return super().input_names()
+
+    @classmethod
+    def output_names(cls):
+        return super().output_names()

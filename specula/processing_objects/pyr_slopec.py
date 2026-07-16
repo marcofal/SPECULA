@@ -1,5 +1,6 @@
 from specula import fuse
 from specula.processing_objects.slopec import Slopec
+from specula.base_processing_obj import OutputDesc
 from specula.data_objects.pupdata import PupData
 from specula.data_objects.slopes import Slopes
 
@@ -15,11 +16,16 @@ def clamp_generic_more(x, c, y, xp):
 
 
 class PyrSlopec(Slopec):
+    """
+    Pyramid slopes computer processing object. 
+    Computes pyramid slopes from pixel data using the 4 pupil intensities.
+    """
+
     def __init__(self,
                  pupdata: PupData,
                  sn: Slopes=None,
                  shlike: bool=False,
-                 norm_factor: float=None,   # TODO =1.0,
+                 norm_factor: float=None,
                  thr_value: float=0,
                  slopes_from_intensity: bool=False,
                  target_device_idx: int=None,
@@ -36,7 +42,7 @@ class PyrSlopec(Slopec):
         if shlike and slopes_from_intensity:
             raise ValueError('Both SHLIKE and SLOPES_FROM_INTENSITY parameters are set. Only one of these should be used.')
 
-        if shlike and norm_factor != 0:
+        if shlike and norm_factor is not None:
             raise ValueError('Both SHLIKE and NORM_FACTOR parameters are set. Only one of these should be used.')
 
         self.shlike = shlike
@@ -47,7 +53,8 @@ class PyrSlopec(Slopec):
             self.pupdata.set_slopes_from_intensity(slopes_from_intensity)   # TODO we should not modify an external object,
                                                                             # since it could be used elsewhere
         pupil_idx = self.pupdata.pupil_idx
-        all_idx = self.xp.concatenate([pupil_idx(i) for i in range(4)]).astype(self.xp.int64)
+        all_idx = self.xp.concatenate([self.to_xp(pupil_idx(i), dtype=self.xp.int64) \
+                                       for i in range(4)])
         self.pup_idx  = all_idx[all_idx >= 0] # Exclude -1 padding
         self.pup_idx0 = pupil_idx(0)[pupil_idx(0) >= 0]  # Exclude -1 padding
         self.pup_idx1 = pupil_idx(1)[pupil_idx(1) >= 0]   # Exclude -1 padding
@@ -60,6 +67,14 @@ class PyrSlopec(Slopec):
         else:
             self.slopes.single_mask = self.pupdata.single_mask()
         self.slopes.display_map = self.pupdata.display_map
+
+    @classmethod
+    def output_names(cls):
+        result = super().output_names()
+        result.update({
+            'out_pupdata': OutputDesc(PupData, 'Pupil data with subaperture geometry'),
+        })
+        return result
 
     def nsubaps(self):
         return self.pupdata.n_subap
@@ -110,18 +125,22 @@ class PyrSlopec(Slopec):
             if self.norm_factor is not None:
                 inv_factor[0] = self.norm_factor
                 factor = 1.0 / inv_factor[0]
-            elif not self.shlike:
-                inv_factor[0] = self.total_intensity /  self.nsubaps()
-                factor = 1.0 / inv_factor
+                self.sx, self.sy = self._compute_pyr_slopes(A, B, C, D, factor)
+            elif self.shlike:
+                # sh_like: normalize per subaperture using flux_per_subap (vectorial normalization)
+                self.sx, self.sy = self._compute_pyr_slopes(A, B, C, D, 1.0)
+                # Avoid division by zero
+                flux_clamped = self.xp.where(flux_per_subap > 0, flux_per_subap, 1.0)
+                self.sx /= flux_clamped
+                self.sy /= flux_clamped
             else:
-                inv_factor[0] = self.xp.sum(self.flat_pixels[self.pup_idx])
+                # Default: global normalization
+                inv_factor[0] = self.total_intensity / self.nsubaps()
                 factor = 1.0 / inv_factor[0]
-
-            self.sx, self.sy = self._compute_pyr_slopes(A, B, C, D, factor)
-
-        clamp_generic_more(0, 1, inv_factor, xp=self.xp)
-        self.sx *= inv_factor[0]
-        self.sy *= inv_factor[0]
+                self.sx, self.sy = self._compute_pyr_slopes(A, B, C, D, factor)
+                clamp_generic_more(0, 1, inv_factor, xp=self.xp)
+                self.sx *= inv_factor[0]
+                self.sy *= inv_factor[0]
 
         self.slopes.xslopes = self.sx
         self.slopes.yslopes = self.sy

@@ -4,7 +4,7 @@ specula.init(0)
 import unittest
 import numpy as np
 from specula.processing_objects.extended_source import ExtendedSource
-from specula.processing_objects.modulated_pyramid import ModulatedPyramid
+from specula.processing_objects.ext_source_pyramid import ExtSourcePyramid
 from specula.data_objects.electric_field import ElectricField
 from specula.base_value import BaseValue
 from specula.data_objects.simul_params import SimulParams
@@ -126,17 +126,18 @@ class TestExtendedSource(unittest.TestCase):
         src.compute()
 
         # Pass it to the pyramid
-        pyr = ModulatedPyramid(
+        pyr = ExtSourcePyramid(
             simul_params=self.simul_params,
             wavelengthInNm=self.wavelengthInNm,
             fov=2.0,
             pup_diam=30,
             output_resolution=output_resolution,
-            mod_amp=3.0
+            max_batch_size=64,
         )
 
         # Flat wavefr
-        ef = ElectricField(pixel_pupil, pixel_pupil, pixel_pitch, S0=1, target_device_idx=target_device_idx)
+        ef = ElectricField(pixel_pupil, pixel_pupil, pixel_pitch, S0=1,
+                           target_device_idx=target_device_idx)
         ef.generation_time = t
         pyr.inputs['in_ef'].set(ef)
         pyr.inputs['ext_source_coeff'].set(src.outputs['coeff'])
@@ -145,10 +146,8 @@ class TestExtendedSource(unittest.TestCase):
 
         # Check that the extended source is loaded and parameters are consistent
         self.assertEqual(pyr.mod_steps, src.npoints)
-        self.assertEqual(pyr.ttexp.shape[1], src.npoints)
         self.assertEqual(pyr.flux_factor_vector.shape[0], src.npoints)
         self.assertAlmostEqual(float(np.sum(specula.cpuArray(pyr.flux_factor_vector))), 1.0, places=6)
-        self.assertEqual(pyr.ttexp.shape[2:], pyr.tilt_x.shape)
 
         # Optionally, plot for debug
         if self.debug_plot:
@@ -242,25 +241,25 @@ class TestExtendedSource(unittest.TestCase):
             ExtendedSource(simul_params, 500, 'FROM_PSF', initial_psf=psf, target_device_idx=target_device_idx)
 
     @cpu_and_gpu
-    def test_check_if_3d(self, target_device_idx, xp):
+    def test_is_3d(self, target_device_idx, xp):
         simul_params = make_simul_params()
         src = ExtendedSource(simul_params, 500, 'POINT_SOURCE', target_device_idx=target_device_idx)
 
         # No layers
-        self.assertFalse(src._check_if_3d())
+        self.assertFalse(src._is_3d())
 
         # One layer, focus height same
         src.layer_height = [10.]
         src.focus_height = 10.
-        self.assertFalse(src._check_if_3d())
+        self.assertFalse(src._is_3d())
 
         # One layer, different focus height
         src.focus_height = 20.
-        self.assertTrue(src._check_if_3d())
+        self.assertTrue(src._is_3d())
 
         # Multiple layers
         src.layer_height = [10., 20.]
-        self.assertTrue(src._check_if_3d())
+        self.assertTrue(src._is_3d())
 
     @cpu_and_gpu
     def test_compute_tophat_cartesian_and_polar_and_rings(self, target_device_idx, xp):

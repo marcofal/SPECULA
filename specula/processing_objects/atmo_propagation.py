@@ -1,33 +1,89 @@
+from specula.base_value import BaseValue
 from specula.lib.make_xy import make_xy
 from specula.lib.utils import local_mean_rebin
-from specula.base_processing_obj import BaseProcessingObj
+from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.lib.interp2d import Interp2D
 from specula.data_objects.electric_field import ElectricField
-from specula.connections import InputList
+from specula.connections import InputList, InputValue
 from specula.data_objects.layer import Layer
+from specula.lib.air_refraction import MatharAirRefraction
 from specula import cpuArray, show_in_profiler
 from specula.data_objects.simul_params import SimulParams
-from skimage.filters import window
-from symao.turbolence import ft_ft2
-from symao.turbolence import ft_ift2
 
 import numpy as np
 
 degree2rad = np.pi / 180.
 
 class AtmoPropagation(BaseProcessingObj):
-    '''Atmospheric propagation'''
+    """
+    Atmospheric propagation processing object.
+    This processing object simulates the propagation of light through atmospheric turbulence
+    layers. It can perform both geometric and physical (Fresnel) propagation, depending on the
+    configuration.
+    """
     def __init__(self,
                  simul_params: SimulParams,
-                 source_dict: dict,     # TODO ={},
+                 source_dict: dict,
                  doFresnel: bool=False,
                  wavelengthInNm: float=500.0,
+                 telescope_altitude_m: float=None,
+                 enable_chromatic_effect: bool=False,
+                 chromatic_reference_wavelengthInNm: float=None,
                  pupil_position=None,
                  mergeLayersContrib: bool=True,
                  upwards: bool=False,
+                 padding_factor: int=1,
+                 beam_center=None,
                  target_device_idx=None,
                  precision=None):
+        """
+        Note
+        ----
+        - By default, all atmospheric phase screens are referenced to a wavelength of 500 nm.
+        - Layer heights are always defined at zenith and projected according to the simulation
+        zenith angle (coming from simul_params).
 
+        Parameters
+        ----------
+        simul_params : SimulParams
+            Simulation parameters object containing global settings.
+        source_dict : dict
+            Dictionary of source objects (e.g., stars, LGS) to be propagated.
+        doFresnel : bool
+            If True, physical Fresnel propagation is performed. Default is False
+            (geometric propagation).
+        wavelengthInNm : float [nm], optional
+            Wavelength in nanometers for Fresnel propagation. Required if doFresnel is True.
+            Default is 500.0 nm.
+        telescope_altitude_m : float [m], optional
+            Telescope altitude above sea level in meters used by chromatic
+            anisoplanatism calculations (default: None).
+        enable_chromatic_effect : bool
+            If True, compute and apply chromatic anisoplanatism shifts for atmospheric layers
+            (default: False).
+            From Devaney et al. "Chromatic Anisoplanatism in Adaptive Optics" SPIE, 2024 
+        chromatic_reference_wavelengthInNm : float [nm], optional
+            Reference wavelength in nanometers used for chromatic
+            anisoplanatism calculations, typically the WFS wavelength.
+            Required when ``enable_chromatic_effect`` is True.
+        pupil_position : array-like [m], optional
+            Position of the pupil in pixels. Default is None (centered).
+        mergeLayersContrib : bool
+            If True, contributions from all layers are merged into a single output per source.
+            Default is True.
+        upwards : bool
+            If True, propagation is performed upwards (from ground to source). Default is False
+            (downwards).
+        padding_factor : int [1], optional
+            Factor for zero padding in Fresnel propagation to avoid numerical issues with FFTs.
+        beam_center : float [1], optional
+            Center of Gaussian uplink beam in pixel. Used for Fraunhofer propagation.
+        target_device_idx : int [1], optional
+            Target device index for computation (CPU/GPU). Default is None (uses global setting).
+        precision : int [1], optional
+            Precision for computation (0 for double, 1 for single). Default is None
+            (uses global setting).
+        """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
         self.simul_params = simul_params
@@ -42,11 +98,16 @@ class AtmoPropagation(BaseProcessingObj):
             raise ValueError('Pixel pupil must be >0')
 
         if doFresnel and wavelengthInNm is None:
-            raise ValueError('get_atmo_propagation: wavelengthInNm is required when doFresnel key is set to correctly simulate physical propagation.')
-
+            raise ValueError('get_atmo_propagation: wavelengthInNm is required when doFresnel key'
+                             ' is set to correctly simulate physical propagation.')
+        if padding_factor < 1:
+            raise ValueError('get_atmo_propagation: padding_factor must be greater than 1.')
+        self.padding_factor = padding_factor
         self.mergeLayersContrib = mergeLayersContrib
-        self.upwards = upwards
+        self.prop_sign = -1 if upwards else 1
         self.pixel_pupil_size = self.pixel_pupil
+        self.beam_center = self.xp.array(beam_center if beam_center is not None else [0,0])
+        self.wavelengthInNm = wavelengthInNm
         self.source_dict = source_dict
         if pupil_position is not None:
             self.pupil_position = np.array(pupil_position, dtype=self.dtype)
@@ -55,121 +116,314 @@ class AtmoPropagation(BaseProcessingObj):
         else:
             self.pupil_position = None
 
-        self.doFresnel = doFresnel
-        self.wavelengthInNm = wavelengthInNm
-        self.propagators = None
+        self.telescope_altitude_m = telescope_altitude_m
+        self.enable_chromatic_effect = enable_chromatic_effect
+        self.chromatic_reference_wavelengthInNm = chromatic_reference_wavelengthInNm
+        self._air_refraction_model = None
         self._block_size = {}
+
+        self.ef_temp = ElectricField(
+                    self.pixel_pupil_size,
+                    self.pixel_pupil_size,
+                    self.pixel_pitch,
+                    target_device_idx=self.target_device_idx,
+                    precision=self.precision,
+                )
+
+        self.doFresnel = doFresnel
+        if self.doFresnel:
+            self.ef_size_padded = self.pixel_pupil * padding_factor
+            self.propagators = None
+            self.ef_fresnel = self.xp.zeros([self.ef_size_padded, self.ef_size_padded], dtype=self.complex_dtype)
+            self.ft_ef1 = self.xp.zeros([self.ef_size_padded, self.ef_size_padded], dtype=self.complex_dtype)
+
+        if self.enable_chromatic_effect:
+            if self.chromatic_reference_wavelengthInNm is None:
+                raise ValueError('chromatic_reference_wavelengthInNm is required when'
+                                 ' enable_chromatic_effect is True.')
+            if self.telescope_altitude_m is None:
+                raise ValueError('telescope_altitude_m is required when'
+                                 ' enable_chromatic_effect is True.')
+            self._air_refraction_model = MatharAirRefraction()
 
         if self.mergeLayersContrib:
             for name, source in self.source_dict.items():
-                ef = ElectricField(self.pixel_pupil_size, self.pixel_pupil_size, self.pixel_pitch, target_device_idx=self.target_device_idx)
+                ef = ElectricField(
+                    self.pixel_pupil_size,
+                    self.pixel_pupil_size,
+                    self.pixel_pitch,
+                    target_device_idx=self.target_device_idx,
+                    precision=self.precision,
+                )
                 ef.S0 = source.phot_density()
                 self.outputs['out_'+name+'_ef'] = ef
 
-        # atmo_layer_list is optional because it can be empty during calibration of an AO system while
-        # the common_layer_list is not optional because at least a pupilstop is needed
+        # atmo_layer_list is optional because it can be empty during calibration of
+        # an AO system while the common_layer_list is not optional because at least a
+        # pupilstop is needed
         self.inputs['atmo_layer_list'] = InputList(type=Layer,optional=True)
         self.inputs['common_layer_list'] = InputList(type=Layer)
 
         self.airmass = 1. / np.cos(np.radians(self.simul_params.zenithAngleInDeg), dtype=self.dtype)
 
-    def field_propagator(self, distanceInM):
+    def fraunhofer_propagator(self, distanceInM):
+        """
+       Jason D. Schmidt, Numerical Simulation of Optical Wave Propagation with Examples in MATLAB
+       Computes the propagators used for Fraunhofer far-field propagation.
+
+       Parameters
+       ----------
+       distanceInM : float [m]
+           Propagation distance in meter.
+       """
         k = 2 * np.pi / (self.wavelengthInNm * 1e-9)
 
-        df = 1 / (self.pixel_pupil_size * self.pixel_pitch)
-        fx, fy = self.xp.meshgrid(
-            df * self.xp.arange(-self.pixel_pupil_size / 2, self.pixel_pupil_size / 2),
-            df * self.xp.arange(-self.pixel_pupil_size / 2, self.pixel_pupil_size / 2))
-        fsq = fx ** 2 + fy ** 2
+        spatial_in_out = (self.xp.arange(-self.ef_size_padded // 2, self.ef_size_padded // 2) + 0.5) * self.pixel_pitch
+        x_in_out, y_in_out = self.xp.meshgrid(spatial_in_out, spatial_in_out)
 
-        propagator = self.xp.exp(-1j * np.pi**2 * 2 * distanceInM / k * fsq)
-        hanning_window = self.to_xp(window(('general_hamming', 0.8), (self.pixel_pupil_size,
-                                                                      self.pixel_pupil_size)))
-        self.propagators.append(propagator*hanning_window)
+        # Fraunhofer propagator
+        H_FR = (self.pixel_pitch ** 2 / (1j * self.wavelengthInNm * 1e-9 * distanceInM)) * self.xp.exp(
+            -1j * (k / (2 * distanceInM)) * (x_in_out ** 2 + y_in_out ** 2))
+
+        # Chirp Z-transform for performing DFT
+        row_idx = self.xp.arange(self.ef_size_padded) - (self.ef_size_padded // 2) + 0.5
+        col_idx = self.xp.arange(self.ef_size_padded) - (self.ef_size_padded // 2) + 0.5
+        H_FR_kernel = self.xp.exp(
+            -1j * k / distanceInM * self.xp.outer(row_idx * self.pixel_pitch, col_idx * self.pixel_pitch))
+        H_FR_in = self.xp.exp(1j * k / (2 * distanceInM) * (x_in_out ** 2 + y_in_out ** 2))
+
+        return [H_FR, H_FR_in, H_FR_kernel], x_in_out, y_in_out
+
+    def asm_propagator(self, distanceInM, d_in, d_out):
+        """
+        Jason D. Schmidt, Numerical Simulation of Optical Wave Propagation with Examples in MATLAB
+        Computes the propagators used for the Angular Spectrum Propagation Method.
+        Applies an automatic scaling if the input grid spacing d_in is not equal to the output grid spacing d_out.
+
+        Parameters
+        ----------
+        distanceInM : float [m]
+            Propagation distance in meter.
+        d_in : float [m]
+            Grid spacing in the source plane
+        d_out : float [m]
+            Grid spacing in the destination plane
+        """
+        k = 2 * np.pi / (self.wavelengthInNm * 1e-9)
+        df = 1 / (self.ef_size_padded * d_in)
+
+        coord = self.xp.arange(-self.ef_size_padded // 2, self.ef_size_padded // 2) + 0.5
+        x, y = self.xp.meshgrid(coord, coord)
+
+        mag = 1
+        if d_out != d_in:
+            mag = d_out / d_in
+            H_in = self.xp.exp(1j * k / 2 * (1 - mag) / distanceInM * ((x * d_in) ** 2 + (y * d_in) ** 2)) / mag
+            H_out = self.xp.exp(1j * k / 2 * (mag - 1) / (mag * distanceInM) * ((x * d_out) ** 2 + (y * d_out) ** 2))
+        else:
+            H_in = None
+            H_out = None
+
+        H_ASM = self.xp.exp(-1j * np.pi ** 2 * 2 * distanceInM / mag / k * ((x * df) ** 2 + (y * df) ** 2))
+
+        return [H_in, H_ASM, H_out]
+
+    def _build_layer_heights(self):
+        """Build a dict mapping each layer to its projected height.
+
+        Atmospheric layers are scaled by airmass (their turbulence screens are
+        in the atmosphere and are observed at a slant path). Common layers
+        (pupil stops, DMs, ...) are physical optics whose conjugation altitude
+        is set by the instrument and does not depend on the zenith angle.
+        """
+        self.layer_height = {}
+        for layer in self.atmo_layer_list:
+            self.layer_height[layer] = float(layer.height) * self.airmass
+        for layer in self.common_layer_list:
+            self.layer_height[layer] = float(layer.height)
+
+    def _build_source_heights(self):
+        """Build a dict mapping each source to its projected height.
+
+        For finite-height sources (e.g. LGS), slant path length is
+        height * airmass. For infinite sources (NGS), height remains infinite.
+        """
+        self.source_height = {}
+        for source in self.source_dict.values():
+            if np.isinf(source.height):
+                self.source_height[source] = source.height
+            else:
+                self.source_height[source] = float(source.height) * self.airmass
+
+    def calc_propagators(self, z):
+        """Calculate propagators based on distance.
+
+        For far-field propagation Fraunhofer is used, otherwise angular spectrum propagation (ASM) method.
+        Propagation distance is automatically reduced to avoid numerical issues with FFTs.
+        """
+        far_field = False
+        if z in (0, self.xp.inf):
+            return None, far_field
+        z_in = z
+
+        z_far_field = 2 * ((self.pixel_pitch * self.pixel_pupil) ** 2) / (self.wavelengthInNm * 1e-9)
+        if z < z_far_field:
+            # Check if propagation distance exceed ASM limit
+            z_max_ASM = self.ef_size_padded * self.pixel_pitch ** 2 / (self.wavelengthInNm * 1e-9)
+            z = min(z, z_max_ASM)
+            propagator = self.asm_propagator(z, self.pixel_pitch, self.pixel_pitch)
+        else:
+            if self.xp.any(self.beam_center + self.pixel_pupil > self.ef_size_padded):
+                raise ValueError(
+                    "For Fraunhofer propagation the beam center is too far off-axis. Please increase zero padding.")
+            propagator, _, _ = self.fraunhofer_propagator(z)
+            far_field = True
+            self.logger.warning(
+                "For far-field Fraunhofer propagation is applied using Chirp Z-transform. If the propagated beam is"
+                " off-axis, please specify the beam center.")
+
+        if z != z_in:
+            self.logger.warning(
+                "For the current configuration the propagation distance is too large. "
+                "Thus it is reduced from " + str(z_in) + "m to " + str(z) +
+                "m. Consider increasing zero padding.")
+
+        return propagator, far_field
 
     def doFresnel_setup(self):
-        self.propagators = []
-        height_layers = np.array(
-            [layer.height * self.airmass for layer in self.common_layer_list + self.atmo_layer_list], dtype=self.dtype)
-        nlayers = len(height_layers)
+        layer_list = self.common_layer_list + self.atmo_layer_list
+        height_layers = np.array([self.layer_height[layer] for layer in layer_list], dtype=self.dtype)
+
+        source_height = self.source_height[self.source_dict[list(self.source_dict)[0]]]
+        if np.isinf(source_height) and self.prop_sign == -1:
+            raise ValueError('Fresnel upwards propagation to infinity not supported.')
+
         sorted_heights = np.sort(height_layers)
-        if not (np.allclose(height_layers, sorted_heights) or np.allclose(height_layers, sorted_heights[::-1])):
-            raise ValueError('Layers must be sorted from highest to lowest or from lowest to highest')
+        if not np.allclose(height_layers, sorted_heights):
+            raise ValueError('Layers must be sorted from lowest to highest')
 
-        if self.upwards:    # upwards propagation
-            end_height = self.source_dict[list(self.source_dict)[0]].height*self.airmass
-            height = 0
-        else:          # downwards propagation
-            end_height = 0
-            height = height_layers[-1]
-            height_layers = height_layers[::-1]
+        height_diffs = np.diff(height_layers, append=source_height)
+        self.propagators, self.far_field_propagation = map(list,
+                                                           zip(*[self.calc_propagators(diff) for diff in height_diffs]))
 
-        z_total = 0
-        for j in range(nlayers):
-            if j == nlayers-1:
-                z = abs(end_height - height) - z_total
-            else:
-                z = abs(height_layers[j+1] - height_layers[j])
-            z_total += z
-            self.field_propagator(z)
+        # adapt for downwards propagation
+        if self.prop_sign == 1:
+            self.propagators = self.propagators[::-1]
+            self.far_field_propagation = self.far_field_propagation[::-1]
+
+            # no propagation from the source downwards
+            self.propagators.pop(0)
+            self.propagators.append(None)
+            self.far_field_propagation.pop(0)
+            self.far_field_propagation.append(None)
+
+        # pre-allocate arrays for propagation
+        self.ef_padded = self.xp.zeros([self.ef_size_padded, self.ef_size_padded], dtype=self.complex_dtype)
+
+    @classmethod
+    def input_names(cls):
+        return {'atmo_layer_list': InputDesc(Layer, 'List of atmospheric turbulence layers (optional). Altitudes will be scaled by airmass.'),
+                'common_layer_list': InputDesc(Layer, 'List of common layers shared across sources. Altitudes not scaled.')}
+
+    @classmethod
+    def output_names(cls):
+        return {
+            'out_{source_name}_ef': OutputDesc(
+                ElectricField,
+                'Output electric field for source channel [source_name]',
+            ),
+        }
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
 
         layer_list = self.common_layer_list + self.atmo_layer_list
-        if not self.upwards:
-            layer_list = layer_list[::-1]
+
         for layer in layer_list:
             if self.magnification_list[layer] is not None and self.magnification_list[layer] != 1:
                 # update layer phase filling the missing values to avoid artifacts during interpolation
                 mask_valid = layer.A != 0
-                local_mean = local_mean_rebin(layer.phaseInNm, mask_valid, self.xp, block_size=self._block_size[layer])
+                local_mean = local_mean_rebin(
+                    layer.phaseInNm,
+                    mask_valid,
+                    self.xp,
+                    block_size=self._block_size[layer]
+                )
                 layer.phaseInNm[~mask_valid] = local_mean[~mask_valid]
 
-    def physical_propagation(self, ef, prop_idx):
-        ft_ef1 = ft_ft2(ef, 1)
-        ft_ef2 = self.propagators[prop_idx]*ft_ef1
-        ef2 = ft_ift2(ft_ef2, 1)
-        return ef2
+    def fraunhofer_far_field_propagation(self, ef_in, propagator):
+        self.ft_ef1[:] = propagator[2] @ (ef_in * propagator[1]) @ propagator[2].T
+        self.ef_fresnel[:] = propagator[0] * self.ft_ef1
+
+    def angular_spectrum_propagation(self, ef_in, propagator):
+        if propagator[0] is not None:
+            ef_in *= propagator[0]
+        self.ft_ef1[:] = self.xp.fft.fft2(self.xp.fft.fftshift(ef_in, axes=(-2, -1)), axes=(-2, -1),
+                                          norm="ortho")
+        self.ef_fresnel[:] = self.xp.fft.fftshift(
+            self.xp.fft.ifft2(self.ft_ef1 * self.xp.fft.fftshift(propagator[1], axes=(-2, -1)), norm="ortho",
+                              axes=(-2, -1)), axes=(-2, -1))
+        if propagator[2] is not None:
+            self.ef_fresnel[:] *= propagator[2]
 
     @show_in_profiler('atmo_propagation.trigger_code')
     def trigger_code(self):
-        if not self.propagators and self.doFresnel:
-            self.doFresnel_setup()
+        layer_list = self.common_layer_list + self.atmo_layer_list
+        if self.prop_sign == 1:  # reverse layers for downwards propagation
+            layer_list = layer_list[::-1]
 
         for source_name, source in self.source_dict.items():
 
+            # reset field
+            if self.doFresnel:
+                s = (self.ef_size_padded - self.pixel_pupil_size) // 2
+                s_shifted = [s, s]
+
+                self.ef_fresnel[:] *= 0
+                self.ef_fresnel[s:s + self.pixel_pupil, s:s +  self.pixel_pupil] = 1 + 0j
+
             if self.mergeLayersContrib:
-                output_ef = self.outputs['out_'+source_name+'_ef']
+                output_ef = self.outputs['out_' + source_name + '_ef']
                 output_ef.reset()
             else:
-                output_ef_list = self.outputs['out_'+source_name+'_ef']
-
-            layer_list = self.common_layer_list + self.atmo_layer_list
-            if not self.upwards:
-                layer_list = layer_list[::-1]
+                output_ef_list = self.outputs['out_' + source_name + '_ef']
 
             for li, layer in enumerate(layer_list):
-
                 if not self.mergeLayersContrib:
                     output_ef = output_ef_list[li]
                     output_ef.reset()
 
                 interpolator = self.interpolators[source][layer]
                 if interpolator is None:
-                    topleft = [(layer.size[0] - self.pixel_pupil_size) // 2, (layer.size[1] - self.pixel_pupil_size) // 2]
-                    output_ef.product(layer, subrect=topleft)
+                    topleft = [(layer.size[0] - self.pixel_pupil_size) // 2, \
+                               (layer.size[1] - self.pixel_pupil_size) // 2]
+                    x2 = topleft[0] + output_ef.size[0]
+                    y2 = topleft[1] + output_ef.size[1]
+                    self.ef_temp.A[:] = layer.A[topleft[0]: x2, topleft[1]: y2]
+                    self.ef_temp.phaseInNm[:] = self.prop_sign * layer.phaseInNm[topleft[0]: x2, topleft[1]: y2]
                 else:
-                    tmp_phase = interpolator.interpolate(layer.phaseInNm)
-
-                    output_ef.A *= interpolator.interpolate(layer.A)
-                    output_ef.phaseInNm += tmp_phase
+                    self.ef_temp.A[:] = interpolator.interpolate(layer.A)
+                    self.ef_temp.phaseInNm[:] = self.prop_sign * interpolator.interpolate(layer.phaseInNm)
 
                 if self.doFresnel:
-                    tmp_ef = self.physical_propagation(output_ef.ef_at_lambda(self.wavelengthInNm), li)
-                    output_ef.phaseInNm[:] = self.xp.angle(tmp_ef) * self.wavelengthInNm / (2 * self.xp.pi)
-                    output_ef.A[:] = abs(tmp_ef)
+                    self.ef_fresnel[s:s + self.pixel_pupil, s:s + self.pixel_pupil] *= self.ef_temp.ef_at_lambda(
+                        self.wavelengthInNm)
+                    if self.propagators[li] is not None:
+                        if not self.far_field_propagation[li]:
+                            self.angular_spectrum_propagation(self.ef_fresnel, self.propagators[li])
+                        else:
+                            self.fraunhofer_far_field_propagation(self.ef_fresnel, self.propagators[li])
+                            s_shifted = s + self.beam_center
 
+                else:
+                    output_ef.A *= self.ef_temp.A
+                    output_ef.phaseInNm += self.prop_sign * self.ef_temp.phaseInNm
+
+            if self.doFresnel:
+                output_ef.phaseInNm[:] = (self.prop_sign * self.xp.angle(
+                    self.ef_fresnel[s_shifted[0]:s_shifted[0] + self.pixel_pupil, s_shifted[1]:s_shifted[1] + self.pixel_pupil]) * self.wavelengthInNm / (
+                                                  2 * self.xp.pi))
+                output_ef.A[:] = (abs(self.ef_fresnel[s_shifted[0]:s_shifted[0] + self.pixel_pupil, s_shifted[1]:s_shifted[1] + self.pixel_pupil]))
 
     def post_trigger(self):
         super().post_trigger()
@@ -177,18 +431,98 @@ class AtmoPropagation(BaseProcessingObj):
         for source_name in self.source_dict.keys():
             self.outputs['out_'+source_name+'_ef'].generation_time = self.current_time
 
+    @staticmethod
+    def _pressure_nasa(h_asl):
+        if h_asl < 11000.0:
+            T_h = 288.08 - 0.00649 * h_asl
+            return 1012.9 * (T_h / 288.08)**5.256
+        elif h_asl < 25000.0:
+            return 226.5 * np.exp(1.73 - 0.000157 * h_asl)
+        else:
+            T_h = 141.94 + 0.00299 * h_asl
+            return 24.88 * (T_h / 216.6)**-11.388
+
+    def compute_chromatic_shifts(self, source, atmo_layer_list):
+        """
+        Pre-compute the chromatic lateral displacement for each *atmospheric* layer.
+
+        Uses the MatharAirRefraction (Ciddor+Mathar) model to calculate precise 
+        refractivity across Visible and Mid-IR bands. Then applies the NASA standard 
+        atmospheric pressure profile to compute the exact lateral shift using the 
+        Devaney 2024 plane-parallel equations (Eq. 1 and Eq. 6).
+
+        The result is stored in self.chromatic_shifts_m as a **dict keyed by
+        Source and Layer objects**, containing the signed lateral displacement in metres.
+        Common layers (pupil stop, DM, etc.) are not included and will
+        implicitly receive a zero shift in the propagation code.
+
+        This method must be called before the interpolators are built.
+
+        Parameters
+        ----------
+        atmo_layer_list : list of Layer
+            Atmospheric turbulence layers only (not common layers such as
+            pupil stops or DMs).
+        zenith_angle_deg : float [deg]
+            Observation zenith angle in degrees.
+
+        Notes
+        -----
+        If enable_chromatic_effect is False or the two wavelengths are identical,
+        all shifts are zero.
+        """
+
+        if not self.enable_chromatic_effect:
+            return
+        if self._air_refraction_model is None:
+            self._air_refraction_model = MatharAirRefraction()
+        if source.wavelengthInNm == self.chromatic_reference_wavelengthInNm:
+            return
+
+        # 1. Compute delta refractivity using Standard Conditions (15 C, 101325 Pa, 0% RH)
+        n_minus_1_ref = self._air_refraction_model.get_refractive_index(
+            self.chromatic_reference_wavelengthInNm * 1e-9)
+        n_minus_1_src = self._air_refraction_model.get_refractive_index(source.wavelengthInNm * 1e-9)
+        delta_N = n_minus_1_ref - n_minus_1_src
+
+        # 2. Parameters for Devaney 2024 Eq. 1
+        zeta_rad = np.radians(self.simul_params.zenithAngleInDeg)
+        sec_z = 1.0 / np.cos(zeta_rad)
+        tan_z = np.tan(zeta_rad)
+
+        g = 9.8 # m/s^2
+        rho_s = 1.225 # kg/m^3
+
+        # Pressure at telescope altitude (P0 in mbar)
+        P_0_mbar = self._pressure_nasa(self.telescope_altitude_m)
+        # Lateral separation of two rays at the telescope aperture (Devaney Eq 1)
+        # Note: Convert mbar to Pascal (1 mbar = 100 Pa)
+        delta_b0 = delta_N * sec_z * tan_z * ((P_0_mbar * 100.0) / (g * rho_s))
+
+        for layer in atmo_layer_list:
+            # Assuming layer.height is the distance above the telescope
+            h_asl = self.telescope_altitude_m + float(layer.height)
+            P_h_mbar = self._pressure_nasa(h_asl)
+
+            # Lateral separation at altitude h (Devaney Eq 6)
+            self.chromatic_shifts_m[source][layer] = delta_b0 * (1.0 - (P_h_mbar / P_0_mbar))
+
     def setup_interpolators(self):
 
         self.interpolators = {}
+        self.chromatic_shifts_m = {}
+        layer_list = self.common_layer_list + self.atmo_layer_list
         for source in self.source_dict.values():
             self.interpolators[source] = {}
+            self.chromatic_shifts_m[source] = {}
 
-            layer_list = self.common_layer_list + self.atmo_layer_list
-            if not self.upwards:
-                layer_list = layer_list[::-1]
+            self.compute_chromatic_shifts(source, self.atmo_layer_list)
+
             for layer in layer_list:
-                diff_height = (source.height - layer.height) * self.airmass
-                if (layer.height == 0 or (np.isinf(source.height) and source.r == 0)) and \
+                diff_height = self.source_height[source] - self.layer_height[layer]
+                chromatic_shift_m = self.chromatic_shifts_m[source].get(layer, 0.0)
+                if (self.layer_height[layer] == 0 or (np.isinf(source.height) and source.r == 0)) and \
+                                chromatic_shift_m == 0.0 and \
                                 not self.shiftXY_cond[layer] and \
                                 self.pupil_position is None and \
                                 layer.rotInDeg == 0 and \
@@ -198,7 +532,10 @@ class AtmoPropagation(BaseProcessingObj):
                 elif diff_height > 0:
                     li = self.layer_interpolator(source, layer)
                     if li is None:
-                        raise ValueError('FATAL ERROR, the source is not inside the selected FoV for atmosphere layers generation.')
+                        raise ValueError(f'FATAL ERROR, the source [{source.polar_coordinates[0]},'
+                                         f'{source.polar_coordinates[1]}] is not inside'
+                                         f' the selected FoV for atmosphere layers generation.'
+                                         f' Layer height: {layer.height} m, size: {layer.size}.')
                     else:
                         self.interpolators[source][layer] = li
                 else:
@@ -206,26 +543,53 @@ class AtmoPropagation(BaseProcessingObj):
 
     def layer_interpolator(self, source, layer):
         pixel_layer = layer.size[0]
-        half_pixel_layer = np.array([(pixel_layer - 1) / 2., (pixel_layer - 1) / 2.])
-        cos_sin_phi =  np.array( [np.cos(source.phi), np.sin(source.phi)])
+        half_pixel_layer = np.array([(layer.size[0] - 1) / 2., (layer.size[1] - 1) / 2.])
+        cos_sin_phi = np.array([np.cos(source.phi), np.sin(source.phi)])
         half_pixel_layer -= cpuArray(layer.shiftXYinPixel)
 
+        lh = self.layer_height[layer]            # projected layer height
+        sh = self.source_height[source]         # projected source height
+
         if self.pupil_position is not None and pixel_layer > self.pixel_pupil_size and np.isinf(source.height):
-            pixel_position_s = source.r * layer.height * self.airmass / layer.pixel_pitch
+            # Off-axis NGS (infinite height): rays from infinity are parallel.
+            # The lateral offset at layer height lh is simply θ * lh (plane-wave geometry).
+            # pupil_position shifts the reference point on the layer for off-pupil-centre pointings
+            # (e.g. field-conjugated DMs or off-axis sub-apertures).
+            pixel_position_s = source.r * lh / layer.pixel_pitch
             pixel_position = pixel_position_s * cos_sin_phi + self.pupil_position / layer.pixel_pitch
         elif self.pupil_position is not None and pixel_layer > self.pixel_pupil_size and not np.isinf(source.height):
-            pixel_position_s = source.r * source.height * self.airmass / layer.pixel_pitch
+            # Finite-height source (LGS) with a non-centred pupil.
+            # The ray goes from the source at projected height sh (sky_pixel_position)
+            # to the pupil centre at pupil_pixel_position (on the ground plane).
+            # At height lh, linear interpolation along the ray gives:
+            #   position(lh) = sky_pos + (pupil_pos - sky_pos) * (1 - lh/sh)
+            #                = (sky_pos - pupil_pos) * lh/sh + pupil_pos
+            # This correctly handles the cone effect: for lh -> 0 the position
+            # approaches the pupil centre; for lh -> sh it approaches the source.
+            pixel_position_s = source.r * sh / layer.pixel_pitch
             sky_pixel_position = pixel_position_s * cos_sin_phi
             pupil_pixel_position = self.pupil_position / layer.pixel_pitch
-            pixel_position = (sky_pixel_position - pupil_pixel_position) * layer.height / source.height + pupil_pixel_position
+            pixel_position = (sky_pixel_position - pupil_pixel_position) * lh / sh + pupil_pixel_position
         else:
-            pixel_position_s = source.r * layer.height * self.airmass / layer.pixel_pitch
+            # Centred-pupil case (pupil_position is None) or layer not larger than pupil.
+            # For an NGS the offset at height lh is θ * lh (plane-wave geometry).
+            # For an LGS the same formula is a valid approximation when the pupil is
+            # centred: the ray from (θ*sh, sh) to (0, 0) crosses height lh at θ * lh.
+            pixel_position_s = source.r * lh / layer.pixel_pitch
             pixel_position = pixel_position_s * cos_sin_phi
+
+        # Apply pre-computed chromatic lateral displacement.
+        # Dispersion always occurs along the elevation axis (typically the Y-axis).
+        # We assume the zenith-pointing direction maps to [0, 1] in pixel coordinates.
+        chromatic_shift_px = self.chromatic_shifts_m[source].get(layer, 0.0) / layer.pixel_pitch
+        if chromatic_shift_px != 0.0:
+            elevation_vector = np.array([0.0, 1.0])
+            pixel_position = pixel_position + chromatic_shift_px * elevation_vector
 
         if np.isinf(source.height):
             pixel_pupmeta = self.pixel_pupil_size
         else:
-            cone_coeff = abs(source.height - abs(layer.height)) / source.height
+            cone_coeff = abs(sh - abs(lh)) / sh
             pixel_pupmeta = self.pixel_pupil_size * cone_coeff
 
         if self.magnification_list[layer] != 1.0:
@@ -236,11 +600,18 @@ class AtmoPropagation(BaseProcessingObj):
         xx1 = xx + half_pixel_layer[0] + pixel_position[0]
         yy1 = yy + half_pixel_layer[1] + pixel_position[1]
 
-        # TODO old code?
-        limit0 = (layer.size[0] - self.pixel_pupil_size) /2
-        limit1 = (layer.size[1] - self.pixel_pupil_size) /2
+        # Check that the source falls within the usable FoV of the layer.
+        # Use pixel_pupmeta (effective footprint after cone/magnification) rather than
+        # pixel_pupil_size so the check is correct for LGS (cone effect) and magnified layers.
+        limit0 = (layer.size[0] - pixel_pupmeta) / 2
+        limit1 = (layer.size[1] - pixel_pupmeta) / 2
         isInside = abs(pixel_position[0]) <= limit0 and abs(pixel_position[1]) <= limit1
         if not isInside:
+            self.logger.warning(f'Warning: Source at [r={source.r}, phi={source.phi}]'
+                  f' is outside the FoV of the layer (layer size: {layer.size},'
+                  f' pixel position: {pixel_position}). limits: [{-limit0}, {limit0}] x'
+                  f'[{-limit1}, {limit1}]. No interpolation will be applied to this layer,'
+                  f' which may lead to artifacts if the layer has significant shift or rotation.')  
             return None
 
         return Interp2D(layer.size, (self.pixel_pupil_size, self.pixel_pupil_size), xx=xx1, yy=yy1,
@@ -267,12 +638,18 @@ class AtmoPropagation(BaseProcessingObj):
             for name, source in self.source_dict.items():
                 self.outputs['out_'+name+'_ef'] = []
                 for _ in range(self.nAtmoLayers):
-                    ef = ElectricField(self.pixel_pupil_size, self.pixel_pupil_size, self.pixel_pitch, target_device_idx=self.target_device_idx)
+                    ef = ElectricField(self.pixel_pupil_size,
+                                       self.pixel_pupil_size,
+                                       self.pixel_pitch,
+                                       target_device_idx=self.target_device_idx,
+                                       precision=self.precision)
                     ef.S0 = source.phot_density()
                     self.outputs['out_'+name+'_ef'].append(ef)
 
         self.shiftXY_cond = {layer: np.any(layer.shiftXYinPixel) for layer in self.atmo_layer_list + self.common_layer_list}
         self.magnification_list = {layer: max(layer.magnification, 1.0) for layer in self.atmo_layer_list + self.common_layer_list}
+        self._build_layer_heights()
+        self._build_source_heights()
 
         self._block_size = {}
         for layer in self.atmo_layer_list + self.common_layer_list:
@@ -282,4 +659,12 @@ class AtmoPropagation(BaseProcessingObj):
                     break
 
         self.setup_interpolators()
-        self.build_stream()
+        if self.doFresnel:
+            self.doFresnel_setup()
+        else:
+            self.build_stream()
+
+    def check_output_names(self):
+        # AtmoPropagation outputs are created dynamically from stored data files;
+        # skip the static output_names validation.
+        pass

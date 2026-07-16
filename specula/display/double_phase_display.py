@@ -29,18 +29,6 @@ class DoublePhaseDisplay(BaseDisplay):
         self.inputs['phase1'] = InputValue(type=ElectricField)
         self.inputs['phase2'] = InputValue(type=ElectricField)
 
-    def reset(self):
-        """Reset the display"""
-        if self._opened:
-            self.ax.clear()
-            self._safe_draw()
-        self.img1 = None
-        self.img2 = None
-        self.nframes = 0
-        self.psd_statTot1 = None
-        self.psd_statTot2 = None
-        self._colorbar_added = False
-
     def _process_phase_data(self, phase):
         """Process phase data: mask and remove average"""
         frame = cpuArray(phase.phaseInNm * (phase.A > 0).astype(float))
@@ -52,8 +40,7 @@ class DoublePhaseDisplay(BaseDisplay):
             # Remove average phase only from valid pixels
             frame[valid_mask] -= np.mean(frame[valid_mask])
 
-            if self.verbose:
-                print('Removing average phase in double_phase_display')
+            self.logger.info('Removing average phase in double_phase_display')
 
         return frame
 
@@ -145,9 +132,6 @@ class DoublePhaseDisplay(BaseDisplay):
     def trigger_code(self):
         """Override to handle dual phase inputs"""
         try:
-            if not self._opened:
-                self._create_figure()
-
             # DoublePhaseDisplay handles dual inputs
             self._update_display()
         except Exception as e:

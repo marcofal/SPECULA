@@ -1,9 +1,13 @@
-
 import re
+import time
+import types
 import typing
 import importlib
 import warnings
+
 from specula import to_xp
+from specula.lib.make_xy import make_xy
+
 
 def camelcase_to_snakecase(s):
     '''
@@ -11,16 +15,16 @@ def camelcase_to_snakecase(s):
     Underscores are not inserted in case of acronyms (like CCD)
     or when the uppercase letter is preceded by a number like M2C.
     '''
-    tokens = re.findall('[A-Z]+[0-9a-z]*', s)
+    tokens = re.findall(r'[A-Z]{3,}(?=[A-Z][a-z])|[A-Z]+[0-9a-z]*', s)
     result = [tokens[0]]
-    for i, t in enumerate(tokens[1:]):
+    for t in tokens[1:]:
         if not result[-1][-1].isdigit():
             result.append('_')
         result.append(t)
-    return ''.join([x.lower() for x in result])
+    return ''.join(x.lower() for x in result)
 
 
-def import_class(classname, additional_modules=[]):
+def import_class(classname, additional_modules=None):
     '''
     Dynamically import a class by name from the appropriate specula submodule.
 
@@ -52,11 +56,14 @@ def import_class(classname, additional_modules=[]):
     AttributeError
         If the class is not found in the located module.
     '''
+    if additional_modules is None:
+        additional_modules = []
+
     modulename = camelcase_to_snakecase(classname)
     module_paths = ['specula.processing_objects',
                     'specula.data_objects',
                     'specula.display'] + additional_modules
-    
+
     for module_path in module_paths:
         module_to_import = f'{module_path}.{modulename}'
         try:
@@ -100,6 +107,21 @@ def get_type_hints(type):
         hints.update(typing.get_type_hints(getattr(x, '__init__')))
     return hints
 
+def remove_suffix(s, suffix):
+    '''Remove the specified suffix from the string if it exists.
+
+    Parameters:
+        s (str): The input string.
+        suffix (str): The suffix to remove.
+    Returns:
+        str: The string with the suffix removed if it was present, otherwise the original string.
+
+    Needed for Python 3.8 compatibility, as str.removesuffix is only available in Python 3.9 and later.
+    '''
+    if s.endswith(suffix):
+        return s[:-len(suffix)]
+    return s
+
 def unravel_index_2d(idxs, shape, xp):
     '''Unravel linear indexes in a 2d-shape (in row-major C order)
     
@@ -113,6 +135,7 @@ def unravel_index_2d(idxs, shape, xp):
     row_idx = idxs // ncols
     col_idx = idxs - (row_idx * ncols)
     return row_idx, col_idx
+
 
 def make_orto_modes(array, xp, dtype):
     """
@@ -133,7 +156,7 @@ def make_orto_modes(array, xp, dtype):
         Orthogonal matrix
     """
     # return an othogonal 2D array
-    
+
     size_array = xp.shape(array)
 
     if len(size_array) != 2:
@@ -149,18 +172,6 @@ def make_orto_modes(array, xp, dtype):
 
     return Q
 
-def is_scalar(x, xp):
-    """
-    Check if x is a scalar or a 0D array.
-
-    Parameters:
-    ----------
-    x : object
-        The object to check.
-    xp : module
-        The array processing module (numpy or cupy) to use for checking the shape.
-    """
-    return xp.isscalar(x) or (hasattr(x, 'shape') and x.shape == ())
 
 def psd_to_signal(psd, fs, xp, dtype, complex_dtype, seed=1):
     """
@@ -169,9 +180,11 @@ def psd_to_signal(psd, fs, xp, dtype, complex_dtype, seed=1):
     Parameters:
     -----------
     psd : 1D array
-        Power spectral density (PSD) of the signal.
+        Power spectral density (PSD) of the signal
+        Note: unit [X^2/Hz], where X is the unit of the signal.
+              Default phase unit in SPECULA is [nm], so PSD unit is [nm^2/Hz].
     fs : float
-        Sampling frequency.
+        Sampling frequency (unit [Hz]).
     xp : module
         Array processing module (numpy or cupy) to use for array operations.
     dtype : data type
@@ -197,6 +210,7 @@ def psd_to_signal(psd, fs, xp, dtype, complex_dtype, seed=1):
     out = xp.real(temp).astype(dtype)
     im = xp.imag(temp).astype(dtype)
     return out, im
+
 
 def local_mean_rebin(arr, mask, xp, block_size=5):
     """
@@ -243,3 +257,124 @@ def local_mean_rebin(arr, mask, xp, block_size=5):
     result[:h_crop, :w_crop] = local_mean
 
     return result
+
+
+def make_subpixel_shift_phase(shape, xp, dtype,
+                              shift_x=0.0, shift_y=0.0,
+                              quarter=False,
+                              zero_sampled=False):
+    """
+    Create a phase ramp for sub-pixel shifts in Fourier space.
+    
+    This generates the complex exponential exp(-2πi(fx*shift_x + fy*shift_y))
+    that, when multiplied with a Fourier transform, shifts the signal by 
+    (shift_x, shift_y) pixels in real space.
+    
+    Parameters:
+    -----------
+    shape : int or tuple
+        Size of the output array. If int, creates square array.
+    xp : module
+        Array processing module (numpy or cupy).
+    dtype : data type
+        Complex data type for output.
+    shift_x : float, optional
+        Shift in x direction (in pixels). Default is 0.0
+    shift_y : float, optional
+        Shift in y direction (in pixels). Default is 0.0
+    quarter : bool, optional
+        If True, uses make_xy with quarter=True. Default is False.
+    zero_sampled : bool, optional
+        If True, uses make_xy with zero_sampled=True. Default is False.
+        
+    Returns:
+    --------
+    phase_ramp : ndarray
+        Complex array with phase ramp for shifting
+        
+    Examples:
+    ---------
+    # Shift by 0.5 pixels in both directions
+    phase = make_subpixel_shift_phase(256, 0.5, 0.5)
+    
+    # For pyramid WFS tlt_f equivalent:
+    phase = make_subpixel_shift_phase(2*p, 0.5, 0.5, quarter=True, zero_sampled=True)
+    """
+    if isinstance(shape, int):
+        size = shape
+        center = size // 2
+    else:
+        size = shape[0]
+        center = shape[0] // 2
+
+    # Create frequency grid
+    if quarter or zero_sampled:
+        xx, yy = make_xy(size, center, quarter=quarter, zero_sampled=zero_sampled, xp=xp)
+        # Normalize to frequency space [-0.5, 0.5)
+        freq_x = xx / size
+        freq_y = yy / size
+    else:
+        freq_x = xp.fft.fftfreq(size, d=1.0)
+        freq_y = xp.fft.fftfreq(size, d=1.0)
+        freq_grid_y, freq_grid_x = xp.meshgrid(freq_y, freq_x, indexing='ij')
+        freq_x = freq_grid_x
+        freq_y = freq_grid_y
+
+    # Create phase ramp
+    phase_ramp = xp.exp(-2j * xp.pi * (freq_x * shift_x + freq_y * shift_y), dtype=dtype)
+
+    return phase_ramp
+
+def make_tn():
+    return time.strftime("%Y%m%d_%H%M%S")
+
+
+def flatten(x):
+    '''
+    Generator that will flatten a list that may contain
+    other lists (nested arbitrarily) and simple items
+    into a flat list.
+
+    >>> flat = flatten([[1,[2,3]],4,[5,6]])
+    >>> list(flat)
+    [1,2,3,4,5,6]
+
+    '''
+    for item in x:
+        try:
+            yield from flatten(item)
+        except TypeError:
+            yield item
+
+
+def resolve_type(tp, require_list=False, require_dict=False):
+    '''
+    Extract type information from compound type declaration:
+    List[Recmat] -> Recmat
+    Dict[str, Recmat] -> Recmat
+    Union[Recmat, None] -> Recmat
+    '''
+    # Python < 3.10 has no types.UnionType
+    try:
+        union_types = [typing.Union, types.UnionType]
+    except AttributeError:
+        union_types = [typing.Union]
+
+    origin = typing.get_origin(tp)
+    args = typing.get_args(tp)
+    if require_list and origin != list:
+        raise TypeError
+    if require_dict and origin != dict:
+        raise TypeError
+
+    if origin == dict:
+        typ = args[1]
+    elif origin == list:
+        typ = args[0]
+    elif origin in union_types:
+        typ = args[0]
+    else:
+        typ = tp
+
+    return typ
+

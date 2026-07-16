@@ -10,11 +10,17 @@ from specula.data_objects.electric_field import ElectricField
 class PhaseDisplay(BaseDisplay):
     def __init__(self,
                  title='Phase Display',
-                 figsize=(8, 6)):  # Default size in inches
+                 figsize=(8, 6),
+                 window: int=None,
+                 subplot: int=111,
+                 ):
         super().__init__(
             title=title,
-            figsize=figsize
+            figsize=figsize,
+            window=window,
+            subplot=subplot,
         )
+        self.img = None
 
         # Setup input
         self.input_key = 'phase'  # Used by base class
@@ -30,24 +36,16 @@ class PhaseDisplay(BaseDisplay):
         if np.any(valid_mask):
             # Remove average phase only from valid pixels
             frame[valid_mask] -= np.mean(frame[valid_mask])
-
-            if self.verbose:
-                print('Removing average phase in phase_display')
+            self.logger.info('Removing average phase in phase_display')
 
         return frame
-
-    def _reset_elements(self):
-        """Reset phase-specific elements"""
-        self.img = None
-        self._colorbar_added = False
 
     def _update_display(self, phase):
         frame = self._process_phase_data(phase)
 
         if self.img is None:
             self.img = self.ax.imshow(frame)
-            self._add_colorbar_if_needed(self.img)
+            self._add_colorbar_if_needed(self.img, unit='nm')
         else:
             self._update_image_data(self.img, frame)
 
-        self._safe_draw()

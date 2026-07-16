@@ -6,6 +6,7 @@ from specula.processing_objects.sh import SH
 class PolyChromSH(PolyChromWFS):
     """
     Polychromatic Shack-Hartmann sensor that wraps multiple monochromatic SH sensors.
+
     Each SH can have its own wavelength, QE factor, and differential tilt.
     """
 
@@ -17,13 +18,11 @@ class PolyChromSH(PolyChromWFS):
                  sensor_pxscale: float,
                  subap_on_diameter: int,
                  subap_npx: int,
-                 FoVres30mas: bool = False,
                  squaremask: bool = True,
                  fov_ovs_coeff: float = 0,
                  xShiftPhInPixel: float = 0,
                  yShiftPhInPixel: float = 0,
                  rotAnglePhInDeg: float = 0,
-                 do_not_double_fov_ovs: bool = False,
                  set_fov_res_to_turbpxsc: bool = False,
                  laser_launch_tel: LaserLaunchTelescope = None,
                  subap_rows_slice = None,
@@ -51,13 +50,11 @@ class PolyChromSH(PolyChromWFS):
                 sensor_pxscale=sensor_pxscale,
                 subap_on_diameter=subap_on_diameter,
                 subap_npx=subap_npx,
-                FoVres30mas=FoVres30mas,
                 squaremask=squaremask,
                 fov_ovs_coeff=fov_ovs_coeff,
                 xShiftPhInPixel=xShiftPhInPixel,
                 yShiftPhInPixel=yShiftPhInPixel,
                 rotAnglePhInDeg=rotAnglePhInDeg,
-                do_not_double_fov_ovs=do_not_double_fov_ovs,
                 set_fov_res_to_turbpxsc=set_fov_res_to_turbpxsc,
                 laser_launch_tel=laser_launch_tel,
                 subap_rows_slice=subap_rows_slice,

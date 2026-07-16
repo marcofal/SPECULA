@@ -1,5 +1,11 @@
+import sys
+import logging
 import unittest
 from unittest.mock import MagicMock, patch
+
+import specula
+specula.init(0)  # Default target device
+
 from specula.base_time_obj import BaseTimeObj
 
 from test.specula_testlib import cpu_and_gpu
@@ -72,16 +78,17 @@ class TestBaseValue(unittest.TestCase):
             self.assertEqual(obj.gpu_bytes_used, 1500)
 
     @cpu_and_gpu
+    @unittest.skipIf(sys.version_info < (3, 10), "Requires Python 3.10+")
     def test_print_mem_usage_calls_print_on_gpu(self, target_device_idx, xp):
         """Ensure printMemUsage prints only for GPU."""
         obj = BaseTimeObj(target_device_idx=target_device_idx)
-        with patch("builtins.print") as mock_print:
-            obj.gpu_bytes_used = 1048576  # 1MB
-            obj.printMemUsage()
-            if target_device_idx >= 0:
-                mock_print.assert_called_once()
-            else:
-                mock_print.assert_not_called()
+        obj.gpu_bytes_used = 1048576  # 1MB
+        if target_device_idx >= 0:
+            with self.assertLogs(obj.logger.logger, logging.DEBUG):
+                obj.printMemUsage()
+        else:
+            with self.assertNoLogs(obj.logger.logger, logging.INFO):
+                obj.printMemUsage()
 
     # ---------- MONITORMEM DECORATOR TESTS ----------
 
@@ -114,6 +121,16 @@ class TestBaseValue(unittest.TestCase):
             result = obj.to_xp([1, 2, 3], dtype=obj.dtype, force_copy=True)
             mock_to_xp.assert_called_once_with(obj.xp, [1, 2, 3], obj.dtype, True)
             self.assertEqual(result, "converted")
+
+    @cpu_and_gpu
+    def test_center_of_mass_available(self, target_device_idx, xp):
+        """Ensure center_of_mass helper is available and returns correct coordinates."""
+        obj = BaseTimeObj(target_device_idx=target_device_idx)
+        arr = obj.xp.zeros((5, 5), dtype=obj.dtype)
+        arr[1, 3] = 1
+        yc, xc = obj.ndimage_center_of_mass(arr)
+        self.assertAlmostEqual(float(yc), 1.0)
+        self.assertAlmostEqual(float(xc), 3.0)
 
     # ------ Time resolution tests
 
@@ -178,3 +195,18 @@ class TestBaseValue(unittest.TestCase):
             recovered = obj.t_to_seconds(t)
             # Within one "tick" of precision
             self.assertAlmostEqual(recovered, seconds, delta=1/resolution)
+
+    @cpu_and_gpu
+    def test_time_conversion_modulus(self, target_device_idx, xp):
+        '''
+        Test that modulus operation work on the result of seconds_to_t(),
+        even when the original data would fail in floating point
+        '''
+        obj = BaseTimeObj(target_device_idx=target_device_idx)
+
+        dt = 1.0
+        time_step = 0.002   # 1.0 % 0.002 == 0.0019999999999999792
+
+        dt = obj.seconds_to_t(dt)
+        time_step = obj.seconds_to_t(time_step)
+        assert dt % time_step == 0

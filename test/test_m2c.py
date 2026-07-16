@@ -3,6 +3,9 @@ import numpy as np
 import tempfile
 import os
 from astropy.io import fits
+
+import specula
+specula.init(0)  # Default target device
 from specula import cpuArray
 from specula.data_objects.m2c import M2C
 from test.specula_testlib import cpu_and_gpu
@@ -20,7 +23,7 @@ class TestM2C(unittest.TestCase):
         with open(m2c_path, 'w') as f:
             f.write('')
         obj = M2C(m2c=np.random.rand(*self.shape))
-        obj.save(m2c_filename,overwrite=True)
+        obj.save(m2c_path, overwrite=True)
 
     @cpu_and_gpu
     def test_initialization_and_get_value(self, target_device_idx, xp):
@@ -63,7 +66,7 @@ class TestM2C(unittest.TestCase):
         data = xp.arange(np.prod(self.shape)).reshape(self.shape).astype(xp.float32)
         obj = M2C(m2c=data, target_device_idx=target_device_idx)
         obj.cut(start_mode=1, nmodes=3)
-        expected = data[:, 1:3]
+        expected = data[:, 1:4]
         np.testing.assert_array_equal(cpuArray(obj.get_value()), cpuArray(expected))
 
     @cpu_and_gpu
@@ -98,7 +101,7 @@ class TestM2C(unittest.TestCase):
 
                 # Primary HDU: header contains version
                 self.assertEqual(hdul[0].header["VERSION"], 1)
-                self.assertEqual(hdul[0].data.shape, (2,))  # dummy data in primary HDU
+                self.assertIsNone(hdul[0].data)  # primary HDU has no data
 
                 # Second HDU: M2C data
                 self.assertEqual(hdul[1].data.shape, self.shape)

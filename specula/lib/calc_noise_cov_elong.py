@@ -4,62 +4,92 @@ import matplotlib.pyplot as plt
 from astropy.modeling import models, fitting
 from specula import cpuArray
 from specula.data_objects.convolution_kernel import lgs_map_sh
+from specula.log import get_specula_logger
 
-
-# TODO this function will be used in the near future for MORFEO
 
 def calc_noise_cov_elong(diameter_in_m, zenith_angle_in_deg, na_thickness_in_m, launcher_coord_in_m,
                          sub_aps_index, n_sub_aps, sub_aps_fov, sh_spot_fwhm, sigma_noise2,
                          t_g_parameter, h_in_m=None, user_pofile_xy=None, theta=None,
-                         only_diag=False, eta_is_not_one=False, display=False, verbose=False):
+                         only_diag=False, eta_is_not_one=False, display=False, log_level=None):
     """
-    Computes noise covariance matrix considering WFS sub-aperture, laser launcher and sodium layer geometry.
-    
-    Parameters:
-        diameter_in_m (float): Telescope diameter in meters
-        zenith_angle_in_deg (float): Zenith angle in degrees
-        na_thickness_in_m (float): Sodium layer FWHM in meters
-        launcher_coord_in_m (list): Laser launcher coordinates in meters [x,y,z]
-        sub_aps_index (array): Index of valid sub-apertures
-        n_sub_aps (int): Number of sub-apertures across diameter
-        sub_aps_fov (float): Sub-aperture FOV in arcsec
-        sh_spot_fwhm (float): FWHM of short axis
-        sigma_noise2 (float): Noise variance (round spot)
-        t_g_parameter (float): Used to set part of the sub-aperture to "truncated" condition
-        h_in_m (float, optional): Altitude of sodium layer in meters
-        user_pofile_xy (list, optional): Sodium profile altitude and intensity fits files
-        theta (list, optional): Additional TT angle of laser launcher
-        only_diag (bool, optional): If True, return a diagonal matrix
-        eta_is_not_one (bool, optional): If True, eta is computed considering flux loss
-        display (bool, optional): If True, display debug plots
-        verbose (bool, optional): If True, print additional information
-    
-    Returns:
-        ndarray: The inverse covariance matrix
-        
-    Reference:
-        Bechet et al., "Optimal reconstruction for closed-loop ground-layer adaptive optics with elongated spots" 
-        JOSA A, Vol. 27, No. 11 (2010)
+    Compute the inverse noise covariance matrix for elongated LGS spots.
+
+    This routine models measurement noise covariance by considering WFS
+    sub-aperture geometry, laser launcher coordinates, sodium layer profile,
+    and optional truncation effects.
+
+    Parameters
+    ----------
+    diameter_in_m : float
+        Telescope diameter in meters.
+    zenith_angle_in_deg : float
+        Zenith angle in degrees.
+    na_thickness_in_m : float
+        Sodium layer FWHM in meters.
+    launcher_coord_in_m : array-like
+        Laser launcher coordinates in meters ``[x, y, z]``.
+    sub_aps_index : array-like
+        Indices of valid sub-apertures.
+    n_sub_aps : int
+        Number of sub-apertures across the diameter.
+    sub_aps_fov : float
+        Sub-aperture field of view in arcsec.
+    sh_spot_fwhm : float
+        FWHM of the short axis of the SH spot.
+    sigma_noise2 : float
+        Noise variance for the round spot case.
+    t_g_parameter : float
+        Fraction used to set sub-apertures in "truncated" condition.
+    h_in_m : float, optional
+        Sodium layer altitude in meters. If ``None``, a default average value
+        is used.
+    user_pofile_xy : list, optional
+        Two FITS filenames for sodium profile altitude and intensity.
+    theta : list, optional
+        Additional tip-tilt angle of the laser launcher.
+    only_diag : bool, optional
+        If ``True``, return a diagonal inverse covariance matrix.
+    eta_is_not_one : bool, optional
+        If ``True``, compute ``eta`` including flux-loss effects.
+    display : bool, optional
+        If ``True``, show debug plots.
+
+    Returns
+    -------
+    ndarray
+        Inverse covariance matrix with shape
+        ``(2 * len(sub_aps_index), 2 * len(sub_aps_index))``.
+
+    References
+    ----------
+    Bechet et al., "Optimal reconstruction for closed-loop ground-layer
+    adaptive optics with elongated spots", JOSA A, Vol. 27, No. 11 (2010).
     """
+    logger = get_specula_logger(__name__)
+    if log_level is not None:
+        logger.setLevel(log_level)
     
     # Convert inputs to CPU arrays for GPU processing
-    diameter_in_m = cpuArray(diameter_in_m)
-    zenith_angle_in_deg = cpuArray(zenith_angle_in_deg)
-    na_thickness_in_m = cpuArray(na_thickness_in_m)
+    diameter_in_m = float(cpuArray(diameter_in_m))
+    zenith_angle_in_deg = float(cpuArray(zenith_angle_in_deg))
+    na_thickness_in_m = float(cpuArray(na_thickness_in_m))
     launcher_coord_in_m = cpuArray(launcher_coord_in_m)
-    sub_aps_index = cpuArray(sub_aps_index)
-    n_sub_aps = cpuArray(n_sub_aps)
-    sub_aps_fov = cpuArray(sub_aps_fov)
-    sh_spot_fwhm = cpuArray(sh_spot_fwhm)
-    sigma_noise2 = cpuArray(sigma_noise2)
-    t_g_parameter = cpuArray(t_g_parameter)
-    h_in_m = cpuArray(h_in_m)
-    theta = cpuArray(theta)
-    
-    if only_diag and verbose:
-        print('onlyDiag is set')
-    if eta_is_not_one and verbose:
-        print('etaIsNotOne is set')
+    sub_aps_index = np.asarray(cpuArray(sub_aps_index), dtype=np.int64)
+    n_sub_aps = int(cpuArray(n_sub_aps))
+    sub_aps_fov = float(cpuArray(sub_aps_fov))
+    sh_spot_fwhm = float(cpuArray(sh_spot_fwhm))
+    sigma_noise2 = float(cpuArray(sigma_noise2))
+    t_g_parameter = float(cpuArray(t_g_parameter))
+    h_in_m = float(cpuArray(h_in_m)) if h_in_m is not None else None
+    # Keep theta as list/array, don't convert to scalar
+    if theta is not None:
+        theta = list(cpuArray(theta)) if hasattr(theta, '__len__') \
+            else [float(theta), float(theta)]
+
+    if only_diag:
+        logger.debug('onlyDiag is set')
+    if eta_is_not_one:
+        logger.debug('etaIsNotOne is set')
 
     if h_in_m is None:
         h_in_m = 90e3  # sodium average altitude
@@ -69,6 +99,29 @@ def calc_noise_cov_elong(diameter_in_m, zenith_angle_in_deg, na_thickness_in_m, 
     h_in_ma = h_in_m * airmass
     na_thickness_in_ma = na_thickness_in_m * airmass
 
+    # Convert flattened sub-aperture indices to 2D coordinates
+    if sub_aps_index.size:
+        max_idx = n_sub_aps * n_sub_aps
+        if sub_aps_index.min() < 0 or sub_aps_index.max() >= max_idx:
+            raise ValueError(
+                f"sub_aps_index contains out-of-range values for grid "
+                f"{n_sub_aps}x{n_sub_aps}"
+            )
+
+    y_idx = sub_aps_index // n_sub_aps
+    x_idx = sub_aps_index % n_sub_aps
+
+    # Coordinates with respect to center (X in column 0 and Y in column 1)
+    coord_sub_aps = np.zeros((len(sub_aps_index), 2), dtype=float)
+    coord_sub_aps[:, 0] = x_idx - float(n_sub_aps / 2)  # X AXIS
+    coord_sub_aps[:, 1] = y_idx - float(n_sub_aps / 2)  # Y AXIS
+
+    coord_sub_aps *= diameter_in_m / n_sub_aps
+
+    # Coordinates with respect to launcher
+    coord_sub_aps[:, 0] -= launcher_coord_in_m[0]
+    coord_sub_aps[:, 1] -= launcher_coord_in_m[1]
+
     if user_pofile_xy is not None or eta_is_not_one:
         pix_for_sa = round(7 * sub_aps_fov / sh_spot_fwhm)
 
@@ -77,7 +130,8 @@ def calc_noise_cov_elong(diameter_in_m, zenith_angle_in_deg, na_thickness_in_m, 
             profz = fits.getdata(user_pofile_xy[1])
         else:
             n_levels = 30
-            dz = np.arange(n_levels) * (4.0 * na_thickness_in_ma / n_levels) - 2 * na_thickness_in_ma
+            dz = np.arange(n_levels) * (4.0 * na_thickness_in_ma / n_levels) \
+                 - 2 * na_thickness_in_ma
             sigma = na_thickness_in_ma / (2.0 * np.sqrt(2.0 * np.log(2.0)))
             profz = np.exp(-(dz**2) / (2 * sigma**2))
 
@@ -85,9 +139,12 @@ def calc_noise_cov_elong(diameter_in_m, zenith_angle_in_deg, na_thickness_in_m, 
         theta_val = [0.0, 0.0] if theta is None else theta
 
         # Call lgs_map_sh to generate spots
-        spots_temp = lgs_map_sh(n_sub_aps, diameter_in_m, launcher_coord_in_m, h_in_ma, dz, profz * 1e6,
-                              sh_spot_fwhm, sub_aps_fov / pix_for_sa, pix_for_sa,
-                              overs=2, theta=theta_val, doCube=True)
+        spots_temp = lgs_map_sh(n_sub_aps, diameter_in_m,
+                                launcher_coord_in_m, h_in_ma,
+                                dz, profz * 1e6,
+                                sh_spot_fwhm, sub_aps_fov / pix_for_sa,
+                                pix_for_sa, overs=2,
+                                theta=theta_val, doCube=True)
 
         beta1 = np.zeros(len(sub_aps_index))
         beta2 = np.zeros(len(sub_aps_index))
@@ -95,34 +152,40 @@ def calc_noise_cov_elong(diameter_in_m, zenith_angle_in_deg, na_thickness_in_m, 
 
         # Calculate max flux (note the different array ordering between IDL and Python)
         max_flux = np.max(np.sum(np.sum(spots_temp, axis=1), axis=1))
-        
-        for i in range(len(sub_aps_index)):
-            spot_i = spots_temp[sub_aps_index[i], :, :]
 
-            # Create 2D coordinate grid for fitting
-            y, x = np.mgrid[:spot_i.shape[0], :spot_i.shape[1]]
-            # Initial guess: center at the middle, max amplitude, estimated sigma
-            p_init = models.Gaussian2D(
-                amplitude=np.max(spot_i),
-                x_mean=spot_i.shape[1]/2,
-                y_mean=spot_i.shape[0]/2,
-                x_stddev=sh_spot_fwhm/(2.355 * sub_aps_fov/spot_i.shape[1]),
-                y_stddev=sh_spot_fwhm/(2.355 * sub_aps_fov/spot_i.shape[0]),
-                theta=0
-            )
-            fit_p = fitting.LevMarLSQFitter()
+
+        for i, sub_ap_index_i in enumerate(sub_aps_index):
+            spot_i = spots_temp[sub_ap_index_i, :, :]
+
+            # 1D marginalization (like IDL: total(spot, 1) and total(spot, 2))
+            x_aver = np.sum(spot_i, axis=0)  # X profile
+            y_aver = np.sum(spot_i, axis=1)  # Y profile
+
+            pix_for_sa_actual = spot_i.shape[0]
+            grid = (np.arange(pix_for_sa_actual) - pix_for_sa_actual / 2.0 + 0.5) \
+                 * sub_aps_fov / pix_for_sa_actual
+
+            fit_1d = fitting.LevMarLSQFitter()
+
             try:
-                # Fit the 2D Gaussian model to the spot
-                p = fit_p(p_init, x, y, spot_i)
-                # Compute FWHM from stddev
-                fwhm_x = 2.0 * np.sqrt(2.0 * np.log(2.0)) * np.abs(p.x_stddev.value)
-                fwhm_y = 2.0 * np.sqrt(2.0 * np.log(2.0)) * np.abs(p.y_stddev.value)
+                # 1D fit over X
+                p_init_x = models.Gaussian1D(amplitude=np.max(x_aver), mean=0,
+                                             stddev=sh_spot_fwhm/2.355)
+                p_x = fit_1d(p_init_x, grid, x_aver)
+                fwhm_x = 2.0 * np.sqrt(2.0 * np.log(2.0)) * np.abs(p_x.stddev.value)
                 beta1[i] = np.sqrt(max(0, fwhm_x**2 - sh_spot_fwhm**2))
+
+                # 1D fit over Y
+                p_init_y = models.Gaussian1D(amplitude=np.max(y_aver), mean=0,
+                                             stddev=sh_spot_fwhm/2.355)
+                p_y = fit_1d(p_init_y, grid, y_aver)
+                fwhm_y = 2.0 * np.sqrt(2.0 * np.log(2.0)) * np.abs(p_y.stddev.value)
                 beta2[i] = np.sqrt(max(0, fwhm_y**2 - sh_spot_fwhm**2))
-            except Exception as e:
+
+            except (TypeError, ValueError, RuntimeError) as e:
                 beta1[i] = 0
                 beta2[i] = 0
-                print(f"Warning: 2D Gaussian fit failed for sub-aperture {i}: {e}")
+                logger.waring(f"1D Gaussian fit failed for sub-aperture {i}: {e}")
 
             # Compute eta (flux normalization)
             if eta_is_not_one:
@@ -132,37 +195,31 @@ def calc_noise_cov_elong(diameter_in_m, zenith_angle_in_deg, na_thickness_in_m, 
     else:
         eta = np.ones(len(sub_aps_index))
 
-        # Convert sub-aperture indices to 2D coordinates
-        # In IDL: subApsIndex2D = array_indices(fltarr(nSubAps,nSubAps),subApsIndex)
-        sub_aps_index_2d = np.array(np.unravel_index(sub_aps_index, (n_sub_aps, n_sub_aps))).T
+        # Calculate beta1 and beta2 from geometry, handling zero coordinates
+        with np.errstate(divide='ignore', invalid='ignore'):
+            beta1_temp = (np.arctan2((h_in_ma - na_thickness_in_ma/2.0), coord_sub_aps[:, 0]) -
+                         np.arctan2((h_in_ma + na_thickness_in_ma/2.0), coord_sub_aps[:, 0])) \
+                             * rad2arcsec
+            beta2_temp = (np.arctan2((h_in_ma - na_thickness_in_ma/2.0), coord_sub_aps[:, 1]) -
+                         np.arctan2((h_in_ma + na_thickness_in_ma/2.0), coord_sub_aps[:, 1])) \
+                             * rad2arcsec
 
-        # Coordinates with respect to center
-        coord_sub_aps = sub_aps_index_2d.astype(float)
-        coord_sub_aps[:, 0] -= float(n_sub_aps / 2)
-        coord_sub_aps[:, 1] -= float(n_sub_aps / 2)
-        coord_sub_aps *= diameter_in_m / n_sub_aps
-
-        # Coordinates with respect to launcher
-        coord_sub_aps[:, 0] -= launcher_coord_in_m[0]
-        coord_sub_aps[:, 1] -= launcher_coord_in_m[1]
-
-        # Calculate beta1 and beta2 from geometry
-        beta1 = (np.arctan((h_in_ma - na_thickness_in_ma/2.0) / coord_sub_aps[:, 1]) - 
-                np.arctan((h_in_ma + na_thickness_in_ma/2.0) / coord_sub_aps[:, 1])) * rad2arcsec
-
-        beta2 = (np.arctan((h_in_ma - na_thickness_in_ma/2.0) / coord_sub_aps[:, 0]) - 
-                np.arctan((h_in_ma + na_thickness_in_ma/2.0) / coord_sub_aps[:, 0])) * rad2arcsec
-
-    if verbose:
-        print('launcher coordinates [m]:', launcher_coord_in_m)
-        print('altitude [m]', h_in_ma)
-        print('thickness [m]', na_thickness_in_ma)
-        print('min max coordinate X', np.min(coord_sub_aps[:, 0]), np.max(coord_sub_aps[:, 0]))
-        print('min max coordinate Y', np.min(coord_sub_aps[:, 1]), np.max(coord_sub_aps[:, 1]))
-        print('min max beta 1', np.min(beta1), np.max(beta1))
-        print('min max beta 2', np.min(beta2), np.max(beta2))
+        # Replace inf/nan with 0 (physically: when aligned with launcher,
+        # elongation in that direction is undefined/zero)
+        beta1 = np.nan_to_num(beta1_temp, nan=0.0, posinf=0.0, neginf=0.0)
+        beta2 = np.nan_to_num(beta2_temp, nan=0.0, posinf=0.0, neginf=0.0)
 
     sigma2 = sh_spot_fwhm**2
+
+    logger.debug(f'launcher coordinates [m]: {launcher_coord_in_m}')
+    logger.debug(f'altitude [m]: {h_in_ma}')
+    logger.debug(f'thickness [m]: {na_thickness_in_ma}')
+    logger.debug(f'min max coordinate X: {np.min(coord_sub_aps[:, 0])} {np.max(coord_sub_aps[:, 0])}')
+    logger.debug(f'min max coordinate Y: {np.min(coord_sub_aps[:, 1])} {np.max(coord_sub_aps[:, 1])}')
+    logger.debug(f'min max beta 1: {np.min(beta1)} {np.max(beta1)}')
+    logger.debug(f'min max beta 2: {np.min(beta2)} {np.max(beta2)}')
+    logger.debug(f'min max eta: {np.min(eta)} {np.max(eta)}')
+    logger.debug(f'sigma_noise2: {sigma2}')
 
     if only_diag:
         # For diagonal-only covariance matrix
@@ -183,8 +240,7 @@ def calc_noise_cov_elong(diameter_in_m, zenith_angle_in_deg, na_thickness_in_m, 
             idx_truncated = np.array([])
             idx_not_truncated = np.arange(2*len(sub_aps_index))
 
-        if verbose:
-            print('no. of truncated sub-apertures', n_truncated)
+        logger.debug(f'no. of truncated sub-apertures: {n_truncated}')
 
         if display:
             plt.figure(0)
@@ -228,8 +284,7 @@ def calc_noise_cov_elong(diameter_in_m, zenith_angle_in_deg, na_thickness_in_m, 
             n_truncated = 0
             idx_not_truncated = np.arange(len(sub_aps_index))
 
-        if verbose:
-            print('no. of truncated sub-apertures', n_truncated)
+        logger.debug(f'no. of truncated sub-apertures: {n_truncated}')
 
         n_not_truncated = len(sub_aps_index) - n_truncated
 
@@ -261,28 +316,28 @@ def calc_noise_cov_elong(diameter_in_m, zenith_angle_in_deg, na_thickness_in_m, 
             for j in range(n_not_truncated):
                 # x diagonal
                 cov_mat_inv[idx_not_truncated_x[j], idx_not_truncated_x[j]] = (
-                    1/sigma_noise2 * eta[idx_not_truncated[j]] / 
-                    (1 + beta_tot[idx_not_truncated[j]]**2 / sigma2) * 
+                    1/sigma_noise2 * eta[idx_not_truncated[j]] /
+                    (1 + beta_tot[idx_not_truncated[j]]**2 / sigma2) *
                     (1 + beta2[idx_not_truncated[j]]**2 / sigma2)
                 )
 
                 # y diagonal
                 cov_mat_inv[idx_not_truncated_y[j], idx_not_truncated_y[j]] = (
-                    1/sigma_noise2 * eta[idx_not_truncated[j]] / 
-                    (1 + beta_tot[idx_not_truncated[j]]**2 / sigma2) * 
+                    1/sigma_noise2 * eta[idx_not_truncated[j]] /
+                    (1 + beta_tot[idx_not_truncated[j]]**2 / sigma2) *
                     (1 + beta1[idx_not_truncated[j]]**2 / sigma2)
                 )
 
                 # xy and yx cross-terms
                 cov_mat_inv[idx_not_truncated_x[j], idx_not_truncated_y[j]] = (
-                    1/sigma_noise2 * eta[idx_not_truncated[j]] / 
-                    (1 + beta_tot[idx_not_truncated[j]]**2 / sigma2) * 
+                    1/sigma_noise2 * eta[idx_not_truncated[j]] /
+                    (1 + beta_tot[idx_not_truncated[j]]**2 / sigma2) *
                     (-beta1[idx_not_truncated[j]] * beta2[idx_not_truncated[j]] / sigma2)
                 )
 
                 cov_mat_inv[idx_not_truncated_y[j], idx_not_truncated_x[j]] = (
-                    1/sigma_noise2 * eta[idx_not_truncated[j]] / 
-                    (1 + beta_tot[idx_not_truncated[j]]**2 / sigma2) * 
+                    1/sigma_noise2 * eta[idx_not_truncated[j]] /
+                    (1 + beta_tot[idx_not_truncated[j]]**2 / sigma2) *
                     (-beta1[idx_not_truncated[j]] * beta2[idx_not_truncated[j]] / sigma2)
                 )
 
@@ -295,27 +350,27 @@ def calc_noise_cov_elong(diameter_in_m, zenith_angle_in_deg, na_thickness_in_m, 
                 # x diagonal
                 cov_mat_inv[idx_truncated_x[j], idx_truncated_x[j]] = (
                     eta[idx_truncated[j]] / 
-                    (sigma_noise2 * beta_tot[idx_truncated[j]]**2) * 
+                    (sigma_noise2 * beta_tot[idx_truncated[j]]**2) *
                     beta2[idx_truncated[j]]**2
                 )
 
                 # y diagonal
                 cov_mat_inv[idx_truncated_y[j], idx_truncated_y[j]] = (
                     eta[idx_truncated[j]] / 
-                    (sigma_noise2 * beta_tot[idx_truncated[j]]**2) * 
+                    (sigma_noise2 * beta_tot[idx_truncated[j]]**2) *
                     beta1[idx_truncated[j]]**2
                 )
 
                 # xy and yx cross-terms
                 cov_mat_inv[idx_truncated_x[j], idx_truncated_y[j]] = (
                     eta[idx_truncated[j]] / 
-                    (sigma_noise2 * beta_tot[idx_truncated[j]]**2) * 
+                    (sigma_noise2 * beta_tot[idx_truncated[j]]**2) *
                     (-beta1[idx_truncated[j]] * beta2[idx_truncated[j]])
                 )
 
                 cov_mat_inv[idx_truncated_y[j], idx_truncated_x[j]] = (
                     eta[idx_truncated[j]] / 
-                    (sigma_noise2 * beta_tot[idx_truncated[j]]**2) * 
+                    (sigma_noise2 * beta_tot[idx_truncated[j]]**2) *
                     (-beta1[idx_truncated[j]] * beta2[idx_truncated[j]])
                 )
 

@@ -6,11 +6,12 @@ from specula.base_value import BaseValue
 
 
 class Slopes(BaseDataObj):
-    '''
-    Slopes data object. Holds a slopes vector, which can be interleaved (XYXYXY...) or not (XXX...YYY...).
+    """
+    Slopes data object.
+    Holds a slopes vector, which can be interleaved (XYXYXY...) or not (XXX...YYY...).
     X and Y slopes can be accessed independently, and a 2d map is available.
-    '''
-    def __init__(self, 
+    """
+    def __init__(self,
                  length: int=None,
                  slopes=None,
                  interleave: bool=False,
@@ -32,7 +33,7 @@ class Slopes(BaseDataObj):
             self.indices_y = self.indices_x + 1
         else:
             self.indices_x = self.xp.arange(0, self.size // 2)
-            self.indices_y = self.indices_x + self.size // 2
+            self.indices_y = self.xp.arange(self.size//2, self.size) # ensure that no element is discarded if self.size is odd
 
     def get_value(self):
         '''
@@ -135,12 +136,12 @@ class Slopes(BaseDataObj):
             if s2.slopes.size > 0:
                 self.slopes -= s2.slopes
             else:
-                print('WARNING (slopes object): s2 (slopes) is empty!')
+                self.logger.warning('s2 (slopes) is empty!')
         elif isinstance(s2, BaseValue):  # Assuming BaseValue is another class
             if s2.value.size > 0:
                 self.slopes -= s2.value
             else:
-                print('WARNING (slopes object): s2 (base_value) is empty!')
+                self.logger.warning('s2 (base_value) is empty!')
 
     def x_remap2d(self, frame, idx):
         """
@@ -273,7 +274,7 @@ class Slopes(BaseDataObj):
             slopes.set_value(slopesdata)
         else:
             slopes.resize(len(slopesdata))  # version 2 header does not have length information
-            slopes.slopes = slopes.to_xp(slopesdata, dtype=slopes.dtype)
+            slopes.slopes[:] = slopes.to_xp(slopesdata, dtype=slopes.dtype)
         return slopes
 
     def array_for_display(self):

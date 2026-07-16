@@ -2,8 +2,12 @@ import unittest
 import numpy as np
 import os
 from astropy.io import fits
+
+import specula
+specula.init(0)  # Default target device
+
 from specula import cpuArray
-from specula.data_objects.ifunc_inv import IFuncInv
+from specula.data_objects.ifunc_inv import IFuncInv, cut_modes
 from test.specula_testlib import cpu_and_gpu
 
 
@@ -31,6 +35,15 @@ class TestIFuncInv(unittest.TestCase):
         obj = IFuncInv(ifunc_inv, mask, target_device_idx=target_device_idx)
 
         self.assertEqual(obj.size, self.shape)
+
+    @cpu_and_gpu
+    def test_nmodes_and_npoints(self, target_device_idx, xp):
+        ifunc_inv = xp.random.rand(*self.shape).astype(xp.float32)
+        mask = xp.random.choice([0, 1], size=self.shape).astype(xp.uint8)
+        obj = IFuncInv(ifunc_inv, mask, target_device_idx=target_device_idx)
+
+        self.assertEqual(obj.npoints(), self.shape[0])
+        self.assertEqual(obj.nmodes(), self.shape[1])
 
     @cpu_and_gpu
     def test_get_value(self, target_device_idx, xp):
@@ -100,4 +113,60 @@ class TestIFuncInv(unittest.TestCase):
     def test_from_header_raises(self, target_device_idx, xp):
         with self.assertRaises(NotImplementedError):
             IFuncInv.from_header({})
+
+    @cpu_and_gpu
+    def test_cut_with_idx_modes(self, target_device_idx, xp):
+        ifunc_inv = xp.random.rand(*self.shape).astype(xp.float32)
+        mask = xp.random.choice([0, 1], size=self.shape).astype(xp.uint8)
+        obj = IFuncInv(ifunc_inv, mask, target_device_idx=target_device_idx)
+
+        idx_modes = [0, 2]
+        obj.cut(idx_modes=idx_modes)
+
+        expected_shape = (self.shape[0], len(idx_modes))
+        self.assertEqual(obj.ifunc_inv.shape, expected_shape)
+
+    @cpu_and_gpu
+    def test_cut_with_start_mode_and_nmodes(self, target_device_idx, xp):
+        ifunc_inv = xp.random.rand(*self.shape).astype(xp.float32)
+        mask = xp.random.choice([0, 1], size=self.shape).astype(xp.uint8)
+        obj = IFuncInv(ifunc_inv, mask, target_device_idx=target_device_idx)
+
+        start_mode = 1
+        nmodes = 2
+        obj.cut(start_mode=start_mode, nmodes=nmodes)
+
+        expected_shape = (self.shape[0], nmodes)
+        self.assertEqual(obj.ifunc_inv.shape, expected_shape)
+
+
+class TestCutModesExceptions(unittest.TestCase):
+
+    # ----------------------------------------
+    # start_mode + idx_modes should raise
+    # ----------------------------------------
+
+    def test_start_mode_with_idx_modes_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            cut_modes(
+                np.zeros((5, 5)),
+                start_mode=0,
+                idx_modes=[0, 1, 2]
+            )
+
+        self.assertIn("start_mode cannot be set together with idx_modes", str(ctx.exception))
+
+    # ----------------------------------------
+    # nmodes + idx_modes should raise
+    # ----------------------------------------
+
+    def test_nmodes_with_idx_modes_raises(self):
+        with self.assertRaises(ValueError) as ctx:
+            cut_modes(
+                np.zeros((5, 5)),
+                nmodes=3,
+                idx_modes=[0, 1, 2]
+            )
+
+        self.assertIn("nmodes cannot be set together with idx_modes", str(ctx.exception))
 

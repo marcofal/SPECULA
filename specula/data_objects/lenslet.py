@@ -1,20 +1,32 @@
 
-
 import numpy as np
 from astropy.io import fits
-
 
 from specula.lib.make_xy import make_xy
 from specula.base_data_obj import BaseDataObj
 
 
 class Lenslet(BaseDataObj):
+    """
+    Lenslet data object.
+    This class holds the information about the lenslet array, such as the number of lenses
+    and their positions.
+    """
     def __init__(self,
                  n_lenses: int=1,
                  target_device_idx:int =None,
                  precision:int =None):
         """
         Initialize a :class:`~specula.data_objects.lenslet.Lenslet` object.
+        
+        Parameters
+        ----------
+        n_lenses : int [1]
+            The number of lenses in the lenslet array (default: 1).
+        target_device_idx : int [1], optional
+            Device index for computation (default: None).
+        precision : int [1], optional
+            Precision for computation (default: None).
         """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
         self.n_lenses = n_lenses
@@ -42,11 +54,11 @@ class Lenslet(BaseDataObj):
         raise NotImplementedError
 
     @property
-    def dimx(self):
+    def dimy(self):
         return len(self._lenses)
 
     @property
-    def dimy(self):
+    def dimx(self):
         return len(self._lenses[0]) if self._lenses else 0
 
     def get(self, x, y):

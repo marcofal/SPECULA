@@ -156,7 +156,7 @@ sh_lgs1: &LGS_SH
   subap_npx:         14                      # Output sampling [usually corresponding to CCD pixels]
   subap_on_diameter: 68                      # Number of subapertures in diameter
   wavelengthInNm:    589                     # [nm] Pyramid wavelength
-  fov_ovs_coeff:     1.52                    # Force phase interpolation to a multiple of 68
+  fov_ovs_coeff:     1.242                   # a margin of 3.9", 20/16.1 = 1.242
   rotAnglePhInDeg:   6.2
   laser_launch_tel_ref: 'launcher1'
   inputs: &LGS_SH_INPUTS
@@ -302,22 +302,19 @@ slopec_ngs3: { <<: *NGS_SLOPEC, inputs: {in_pixels: 'detector_ngs3.out_pixels' }
 # -----------------------------
 
 tomo_polc_lgs:
-  class:              'Modalrec'
+  class:              'ModalrecExplicitPolc'
   recmat_object:      '20231207_111630.0/recmat' # Tallon
   projmat_object:     'p20231207_063630.0/projmatAll' # 6258 modes
   intmat_object:      '20250911_000001.0/intmat' # 6258 modes
-  polc:   true
-  input_modes_slice:  [0, 6258] 
-  in_commands_size:   6258
   inputs:
-    in_slopes_list:        ['slopec_lgs1.out_slopes','slopec_lgs2.out_slopes','slopec_lgs3.out_slopes','slopec_lgs4.out_slopes','slopec_lgs5.out_slopes','slopec_lgs6.out_slopes']
-    in_commands:            'iir_lgs.out_comm:-1'
+    in_slopes_list:        ['slopec_lgs1.out_slopes','slopec_lgs2.out_slopes','slopec_lgs3.out_slopes',
+                            'slopec_lgs4.out_slopes','slopec_lgs5.out_slopes','slopec_lgs6.out_slopes']
+    in_commands:            'iir_lgs.out_comm_no_delay:-1'
   outputs:  ['out_modes', 'out_pseudo_ol_modes']
 
 
 iir_lgs:
   class:             'Integrator'
-  simul_params_ref:  'main'
   int_gain: [0.0,0.25,0.0,0.25]
   n_modes:  [2,5232,3,1021]
   delay: 1.75
@@ -334,12 +331,11 @@ tomo_ngs:
   recmat_object:      '20240613_200330.0/recmat' # NGS at 55asec
   inputs:
     in_slopes_list:        ['slopec_ngs1.out_slopes','slopec_ngs2.out_slopes','slopec_ngs3.out_slopes']
-  outputs:  ['out_modes', 'out_pseudo_ol_modes']
+  outputs:  ['out_modes']
 
 
 iir_ngs:
   class:             'Integrator'
-  simul_params_ref:  'main'
   int_gain: [0.1,0.1]
   n_modes:  [2,3]
   delay: 1.75

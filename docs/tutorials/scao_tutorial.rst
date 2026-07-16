@@ -20,6 +20,13 @@ Note that a more basic SCAO simulation tutorial is available in the :ref:`scao_b
 * Basic understanding of adaptive optics concepts
 * Python and YAML familiarity
 
+.. note::
+
+   **About atmospheric and source parameters:**
+   All atmospheric parameters (seeing, layer heights) and source heights are defined at zenith.
+   The zenith angle affects airmass and geometric projections, but not source positions in the field.
+   See :ref:`simulation_parameters` for details on the zenith convention.
+
 Tutorial Overview
 -----------------
 
@@ -120,7 +127,7 @@ Create a script ``compute_influence_functions.py`` (inspired by ``test_modal_bas
       print(f"r0 = {r0}m, L0 = {L0}m")
       
       # Step 1: Generate zonal influence functions
-      influence_functions, pupil_mask = compute_zonal_ifunc(
+      influence_functions, pupil_mask, _, _ = compute_zonal_ifunc(
           pupil_pixels,
           n_actuators,
           circ_geom=circGeom,
@@ -133,8 +140,7 @@ Create a script ``compute_influence_functions.py`` (inspired by ``test_modal_bas
           diaratio=diaratio,
           mask=None,
           xp=specula.xp,
-          dtype=dtype,
-          return_coordinates=False
+          dtype=dtype
       )
       
       # Print statistics
@@ -375,13 +381,13 @@ Create ``config/scao_tutorial.yml``:
      pixel_pitch:       0.0513                # [m] 8.2m / 160 pixels = 0.0513 m/pixel
      total_time:        2.000                 # [s] 2 seconds simulation
      time_step:         0.001                 # [s] 1ms time steps (1 kHz)
-     zenithAngleInDeg:  0.0                   # [deg] Zenith observation (no airmass)
+     zenithAngleInDeg:  0.0                   # [deg] Zenith observation (0 means no airmass)
      display_server:    false                 # Disable for batch runs
    
    # Atmospheric conditions
    seeing:
      class:             'WaveGenerator'
-     constant:          0.65                  # [arcsec] Good seeing conditions (r0 about 15cm)
+     constant:          0.65                  # [arcsec] Good seeing conditions (500nm, at zenith, r0 about 15cm)
      outputs:           ['output']
    
    wind_speed:
@@ -423,8 +429,8 @@ Create ``config/scao_tutorial.yml``:
      simul_params_ref:  'main'
      L0:                25.0                  # [m] Outer scale
      # Simplified 3-layer model for tutorial
-     heights:           [0.0, 4000.0, 12000.0]  # [m] Ground, mid, high layers
-     Cn2:               [0.7, 0.2, 0.1]       # Cn2 fractions (sum = 1.0)
+     heights:           [0.0, 4000.0, 12000.0] # [m] Ground, mid, high layers at 0 zenith angle
+     Cn2:               [0.7, 0.2, 0.1]        # Cn2 fractions (sum = 1.0)
      fov:               60.0                   # [arcsec] Field of view
      inputs:
        seeing:          'seeing.output'
@@ -493,7 +499,6 @@ Create ``config/scao_tutorial.yml``:
    # Integrator controller
    integrator:
      class:             'Integrator'
-     simul_params_ref:  'main'
      delay:             1                     # 1 frame delay (realistic)
      int_gain:          [0.30]
      n_modes:           [800]                 # Number of modes to control

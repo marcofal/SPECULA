@@ -5,8 +5,9 @@ from specula.processing_objects.modulated_pyramid import ModulatedPyramid
 
 class PolyCromPyramid(PolyChromWFS):
     """
-    Polychromatic Pyramid sensor that wraps multiple monochromatic ModulatedPyramid sensors.
-    Each can have its own wavelength, flux factor, and differential tilt.
+    Poly-chromatic Pyramid sensor processing object. 
+    Wraps multiple monochromatic ModulatedPyramid sensors, each of which 
+    can have its own wavelength, flux factor, and differential tilt.
     """
 
     def __init__(self,
@@ -14,9 +15,9 @@ class PolyCromPyramid(PolyChromWFS):
                  flux_factor: list,
                  # Pyramid parameters (shared by all instances)
                  simul_params: SimulParams,
-                 fov: float,            # TODO =2.0,
-                 pup_diam: int,         # TODO =30,
-                 output_resolution: int,# TODO =80,
+                 fov: float,
+                 pup_diam: int,
+                 output_resolution: int,
                  mod_amp: float = 3.0,
                  mod_step: int = None,
                  mod_type: str = 'circular',  # 'circular', 'vertical', 'horizontal', 'alternating'

@@ -95,6 +95,8 @@ class ZernikeGenerator():
         else:
             raise ValueError('<pupil> must be either a number or a CircularMask instance')
 
+        self._boolean_mask = to_xp(xp, self._boolean_mask, dtype=bool)
+
         self._rhoMap, self._thetaMap = self._polar_array()
         self._dx = None
         self._dy = None
@@ -261,8 +263,8 @@ class ZernikeGenerator():
         if index not in list(self._dictCache.keys()):
             res = self._polar(index, self._rhoMap,
                               self._thetaMap)
-            tmp = np.ma.masked_array(data=cpuArray(res), mask=cpuArray(self._boolean_mask))
-            self._dictCache[index] = to_xp(self.xp, tmp, dtype=self.dtype)
+            res[self._boolean_mask] = 0
+            self._dictCache[index] = to_xp(self.xp, res, dtype=self.dtype)
         return self._dictCache[index]
 
     @staticmethod

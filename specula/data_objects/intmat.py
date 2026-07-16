@@ -10,37 +10,34 @@ from specula.data_objects.recmat import Recmat
 
 
 class _ColsView:
-    '''
+    """
     Allows numpy-like indexing for columns.
     
     This class is initialized with a reference to the main intmat object,
     and not the intmat array directly, because some Intmat methods
     re-allocate the array, making all previous references invalid.
-    '''
+    """
     def __init__(self, intmat_obj): self.intmat_obj = intmat_obj
     def __getitem__(self, key): return self.intmat_obj.intmat[:, key]
     def __setitem__(self, key, value): self.intmat_obj.intmat[:, key] = self.intmat_obj.to_xp(value)
- 
+
 class _RowsView:
-    '''
+    """
     Allows numpy-like indexing for rows
 
     This class is initialized with a reference to the main intmat object,
     and not the intmat array directly, because some Intmat methods
     re-allocate the array, making all previous references invalid.
-    '''
+    """
     def __init__(self, intmat_obj): self.intmat_obj = intmat_obj
     def __getitem__(self, key): return self.intmat_obj.intmat[key, :]
     def __setitem__(self, key, value): self.intmat_obj.intmat[key, :] = self.intmat_obj.to_xp(value)
 
 class Intmat(BaseDataObj):
-    '''
-    Interaction matrix axes are [slopes, modes]
-
-    Members .modes and .slopes allow numpy-like access, for example:
-
-    intmat_obj.modes[3:5] += 1
-    '''
+    """
+    Interaction matrix data object.
+    This class holds the interaction matrix (intmat) and related metadata for wavefront reconstruction.
+    """
     def __init__(self,
                  intmat = None,
                  nmodes:  int = None,
@@ -52,6 +49,16 @@ class Intmat(BaseDataObj):
                  norm_factor: float= 0.0,
                  target_device_idx: int=None,
                  precision: int=None):
+        """
+        Note
+        ----
+        
+        axes are [slopes, modes]
+
+        Members .modes and .slopes allow numpy-like access, for example:
+
+        intmat_obj.modes[3:5] += 1
+        """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
         if intmat is not None:
             self.intmat = self.to_xp(intmat)
@@ -187,7 +194,7 @@ class Intmat(BaseDataObj):
             influence_function = modal_base.influence_function
         c_atm = compute_ifs_covmat(
             modal_base.mask_inf_func, diameter, influence_function, r0, L0,
-            oversampling=2, verbose=False, xp=self.xp, dtype=self.dtype
+            oversampling=2, xp=self.xp, dtype=self.dtype
         )
         if c_atm.shape[0] > intmat.shape[1]:
             c_atm = c_atm[:intmat.shape[1], :intmat.shape[1]]
@@ -233,7 +240,7 @@ class Intmat(BaseDataObj):
         recmat = compute_mmse_reconstructor(self.to_xp(intmat), c_atm, self.xp,
                                             self.dtype, noise_variance=noise_variance,
                                             c_noise=c_noise_mat,
-                                            c_inverse=False, verbose=False)
+                                            c_inverse=False)
         rec = Recmat(recmat, target_device_idx=self.target_device_idx)
         return rec
 
@@ -241,25 +248,3 @@ class Intmat(BaseDataObj):
         # TODO handle n_modes_to_drop, and w_vec
         return self.xp.linalg.pinv(matrix)
 
-    @staticmethod
-    def build_from_slopes(slopes, disturbance, target_device_idx=None):
-        times = list(slopes.keys())
-        nslopes = len(slopes[times[0]])
-        nmodes = len(disturbance[times[0]])
-        intmat = np.zeros((nslopes, nmodes))
-        im = Intmat(intmat, target_device_idx=target_device_idx)
-        iter_per_mode = im.xp.zeros(nmodes)
-
-        for t in times:
-            amp = disturbance[t]
-            mode = np.where(amp)[0][0]
-            im.modes[mode] += im.to_xp(slopes[t] / amp[mode])
-            iter_per_mode[mode] += 1
-
-        for mode in range(nmodes):
-            if iter_per_mode[mode] > 0:
-                im.modes[mode] /= iter_per_mode[mode]
-
-        im.slope_mm = im.xp.zeros((nmodes, 2))
-        im.slope_rms = im.xp.zeros(nmodes)
-        return im

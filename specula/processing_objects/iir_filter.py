@@ -1,195 +1,123 @@
-import numpy as np
-
-from specula.data_objects.iir_filter_data import IirFilterData
-from specula.base_processing_obj import BaseProcessingObj
-from specula.connections import InputValue
+from specula.base_processing_obj import InputDesc
 from specula.base_value import BaseValue
-from specula.data_objects.simul_params import SimulParams
+from specula.connections import InputValue
+from specula.processing_objects.base_filter import BaseFilter
+from specula.data_objects.iir_filter_data import IirFilterData
 
-class IirFilter(BaseProcessingObj):
-    '''Infinite Impulse Response filter based Time Control
+
+class IirFilter(BaseFilter):
+    """ 
+    Infinite Impulse Response filter processing object.
+    Implements IIR filtering with optional integration control.
     
-    Set *integration* to False to disable integration, regardless
-    of wha the input IirFilter object contains
-    '''
+    Parameters
+    ----------
+    iir_filter_data : IirFilterData
+        Filter coefficients (numerator and denominator)
+    delay : float [1], optional
+        Delay in frames to apply to the output (default: 0)
+    integration : bool
+        If False, disables feedback terms (converts IIR to FIR).
+        This is done by masking the denominator coefficients while
+        preserving the normalizing factor. (default: True)
+    target_device_idx : int [1], optional
+        Target device for computation (-1 for CPU, >=0 for GPU)
+    precision : int [1], optional
+        Numerical precision (0 for double, 1 for single)
+    
+    Notes
+    -----
+    When integration=False, the filter becomes purely feedforward (FIR),
+    removing all feedback/memory from previous outputs while maintaining
+    the gain characteristics defined by the numerator coefficients.
+    """
+
     def __init__(self,
-                 simul_params: SimulParams,
                  iir_filter_data: IirFilterData,
-                 delay: float=0,
-                 integration: bool=True,
-                 offset: float=None,
-                 og_shaper: float=None,
+                 delay: float = 0,
+                 integration: bool = True,
                  target_device_idx=None,
-                 precision=None
-                 ):
+                 precision=None):
 
-        self.time_step = simul_params.time_step
-
-        self.verbose = True
         self.iir_filter_data = iir_filter_data
 
-        self.integration = integration
-        if integration is False:
-            raise NotImplementedError('IirFilter: integration=False is not implemented yet')
+        super().__init__(
+            nfilter=iir_filter_data.nfilter,
+            delay=delay,
+            target_device_idx=target_device_idx,
+            precision=precision)
 
-        if og_shaper is not None:
-            raise NotImplementedError('OG Shaper not implementd yet')
+        self.inputs['in_ost'] = InputValue(type=BaseValue, optional=True)
 
-        if offset != None:
-            raise NotImplementedError('Offset not implemented yet')
-
-        super().__init__(target_device_idx=target_device_idx, precision=precision)        
-
-        self.delay = delay if delay is not None else 0
-        self._n = iir_filter_data.nfilter
-        self._type = iir_filter_data.num.dtype
-        self.set_state_buffer_length(int(np.ceil(self.delay)) + 1)
-
-        # Initialize state vectors
+        # IIR-specific state
         self._ist = self.xp.zeros_like(iir_filter_data.num)
         self._ost = self.xp.zeros_like(iir_filter_data.den)
 
-        self.out_comm = BaseValue(value=self.xp.zeros(self._n, dtype=self.dtype), target_device_idx=target_device_idx)
-        self.inputs['delta_comm'] = InputValue(type=BaseValue)
-        self.inputs['gain_mod'] = InputValue(type=BaseValue,optional=True)
-        self.outputs['out_comm'] = self.out_comm
+        # Integration control
+        self._den_mask = self.xp.ones_like(self.iir_filter_data.den)
+        if not integration:
+            self._den_mask[:, :-1] = 0
 
-        self._opticalgain = None  # TODO
-        self._og_shaper = None  # TODO
-        self._offset = None  # TODO
-        self._bootstrap_ptr = None  # TODO
-        self._modal_start_time = None  # TODO
-        self._skipOneStep = False  # TODO
-        self._StepIsNotGood = False  # TODO
-        self._start_time = 0  # TODO
+    @classmethod
+    def input_names(cls):
+        result = super().input_names()
+        result.update({
+            'in_ost': InputDesc(BaseValue, 'State update to subtract from integrators (optional)')
+        })
+        return result
 
-    def set_state_buffer_length(self, total_length):
-        self._total_length = total_length
-        if self._n is not None and self._type is not None:
-            self.state = self.xp.zeros((self._n, self._total_length), dtype=self.dtype)
-
-    # TODO not used
-    @property
-    def last_state(self):
-        return self.state[:, 0]
-
-    # TODO not used
-    def set_modal_start_time(self, modal_start_time):
-        modal_start_time_ = self.to_xp(modal_start_time, dtype=self.dtype)
-        for i in range(len(modal_start_time)):
-            modal_start_time_[i] = self.seconds_to_t(modal_start_time[i])
-        self._modal_start_time = modal_start_time_
+    @classmethod
+    def output_names(cls):
+        return super().output_names()
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
-        self.delta_comm = self.local_inputs['delta_comm'].value
+        in_ost_input = self.local_inputs.get('in_ost')
+        if in_ost_input is not None and in_ost_input.value is not None:
+            ost_update = in_ost_input.value
+            ost_update_array = self.xp.asarray(ost_update, dtype=self.dtype).ravel()
 
-        # Update the state
-        if self.delay > 0:
-            self.state[:, 1:self._total_length] = self.state[:, 0:self._total_length-1]
+            # 1. Update the filter state
+            for i in range(self.output_buffer.shape[1]):
+                self.output_buffer[:, i] -= ost_update_array
 
-        # check if gain_mod is provided
-        if self.local_inputs['gain_mod'] is not None:
-            self._gain_mod = self.local_inputs['gain_mod'].value
-        else:
-            # Default gain_mod is an array of ones
-            self._gain_mod = self.xp.ones_like(self.delta_comm, dtype=self.dtype)
-
-        return
-
-        ##############################
-        # Start of unused code
-
-        if self._opticalgain is not None:
-            if self._opticalgain.value > 0:
-                self.delta_comm *= 1.0 / self._opticalgain.value
-                if self._og_shaper is not None:
-                    self.delta_comm *= self._og_shaper
-                # should not modify an input, right?
-                # self.local_inputs['delta_comm'].value = self.delta_comm
-                print(f"WARNING: optical gain compensation has been applied (g_opt = {self._opticalgain.value:.5f}).")
-        if self._start_time > 0 and self._start_time > t:
-            # self.newc = self.xp.zeros_like(delta_comm.value)
-            print(f"delta comm generation time: {self.local_inputs['delta_comm'].generation_time} is not greater than {self._start_time}")
-
-        if self._modal_start_time is not None:
-            for i in range(len(self._modal_start_time)):
-                if self._modal_start_time[i] > t:
-                    self.delta_comm[i] = 0
-                    print(f"delta comm generation time: {self.delta_comm.generation_time} is not greater than {self._modal_start_time[i]}")
-                    print(f" -> value of mode no. {i} is set to 0.")
-
-        if self._skipOneStep:
-            if self._StepIsNotGood:
-                self.delta_comm *= 0
-                self._StepIsNotGood = False
-                print("WARNING: the delta commands of this step is set to 0 because skipOneStep key is active.")
-            else:
-                self._StepIsNotGood = True
-
-        if self._bootstrap_ptr is not None:
-            bootstrap_array = self._bootstrap_ptr
-            bootstrap_time = bootstrap_array[:, 0]
-            bootstrap_scale = bootstrap_array[:, 1]
-            idx = self.xp.where(bootstrap_time <= self.t_to_seconds(t))[0]
-            if len(idx) > 0:
-                idx = idx[-1]
-                if bootstrap_scale[idx] != 1:
-                    print(f"ATTENTION: a scale factor of {bootstrap_scale[idx]} is applied to delta commands for bootstrap purpose.")
-                    self.delta_comm *= bootstrap_scale[idx]
-                else:
-                    print("no scale factor applied")
-
-# this is probably useless
-#        n_delta_comm = self.delta_comm.size
-#        if n_delta_comm < self.iir_filter_data.nfilter:
-#            self.delta_comm = self.xp.zeros(self.iir_filter_data.nfilter, dtype=self.dtype)
-#            self.delta_comm[:n_delta_comm] = self.local_inputs['delta_comm'].value
-
-        if self._offset is not None:
-            self.delta_comm[:self._offset.shape[0]] += self._offset
+            # 2. PURGE THE DELAY PIPELINE
+            for j in range(self._ost.shape[1]):
+                self._ost[:, j] -= ost_update_array
 
     def trigger_code(self):
+        """IIR filter computation."""
         sden = self.iir_filter_data.den.shape
         snum = self.iir_filter_data.num.shape
         no = sden[1]
         ni = snum[1]
 
-        # Delay the vectors
+        # Shift state buffers
         self._ost[:, :-1] = self._ost[:, 1:]
-        self._ost[:, -1] = 0  # Reset the last column
-
+        self._ost[:, -1] = 0
         self._ist[:, :-1] = self._ist[:, 1:]
-        self._ist[:, -1] = 0  # Reset the last column
+        self._ist[:, -1] = 0
 
         # New input
         self._ist[:, ni - 1] = self.delta_comm
 
-        # Precompute the reciprocal of the denominator
+        # Compute output
         factor = 1 / self.iir_filter_data.den[:, no - 1]
+        num_contrib = self.xp.sum(
+            self.iir_filter_data.num * self._gain_mod[:, None] * self._ist, axis=1)
+        den_contrib = self.xp.sum(
+            self.iir_filter_data.den[:, :no - 1] * 
+            self._den_mask[:, :no - 1] * 
+            self._ost[:, :no - 1], axis=1)
 
-        # Compute new output
-        num_contrib = self.xp.sum(self.iir_filter_data.num * self._gain_mod[:, None] * self._ist, axis=1)
-        den_contrib = self.xp.sum(self.iir_filter_data.den[:, :no - 1] * self._ost[:, :no - 1], axis=1)
-        self._ost[:, no - 1] = factor * (num_contrib - den_contrib)
-        output = self._ost[:, no - 1]
+        output = factor * (num_contrib - den_contrib)
+        self._ost[:, no - 1] = output
 
-        # Update the state
-        self.state[:, 0] = output
+        # Store in buffer
+        self.output_buffer[:, 0] = output
 
-    def post_trigger(self):
-        super().post_trigger()
-
-        # Calculate output from the state considering the delay
-        remainder_delay = self.delay % 1
-        if remainder_delay == 0:
-            output = self.state[:, int(self.delay)]
-        else:
-            output = (remainder_delay * self.state[:, int(np.ceil(self.delay))] + \
-                     (1 - remainder_delay) * self.state[:, int(np.ceil(self.delay))-1])
-
-        if self._offset is not None and self.xp.all(output == 0):
-            output[:self._offset.shape[0]] += self._offset
-
-        self.out_comm.value = output
-        self.out_comm.generation_time = self.current_time
+    def reset_states(self):
+        """Reset IIR internal states."""
+        super().reset_states()
+        self._ist[:] = 0
+        self._ost[:] = 0

@@ -9,28 +9,41 @@ from specula.lib.utils import import_class
 
 
 class DataSource(BaseProcessingObj):
-    '''Data source object'''
+    """
+    Data source processing object.
+    Loads data from files and outputs it based on the current time.
+    """
 
     def __init__(self,
-                outputs: list,         # TODO =[],
-                store_dir: str,        # TODO ="",
-                data_format: str='fits'):
+                outputs: list,
+                store_dir: str,
+                data_format: str='fits',
+                global_precision: int=None):
         super().__init__()
         self.items = {}
         self.storage = {}
         self.data_filename = ''
         self.tn_dir = store_dir
         self.data_format = data_format
+        self.global_precision = global_precision
         self.headers = {}
         self.obj_type = {}
 
-        for aout in outputs:            
+        for aout in outputs:
             self.loadFromFile(aout)
         for k in self.storage.keys():
             if self.obj_type[k] not in ['BaseValue', 'BaseDataObj']:
                 self.outputs[k] = import_class(self.obj_type[k]).from_header(self.headers[k])
             else:
                 self.outputs[k] = BaseValue(target_device_idx=self.target_device_idx)
+
+    @classmethod
+    def input_names(cls):
+        return {}
+
+    @classmethod
+    def output_names(cls):
+        return {}
 
     def loadFromFile(self, name):
         if name in self.items:
@@ -50,7 +63,7 @@ class DataSource(BaseProcessingObj):
         if 'hdr' in unserialized_data:
             self.headers[name] = unserialized_data['hdr']
             self.obj_type[name] = self.headers[name]['OBJ_TYPE']
-        
+
         self.storage[name] = { t:data[i] for i, t in enumerate(times.tolist())}
 
     def load_fits(self, name):
@@ -64,14 +77,21 @@ class DataSource(BaseProcessingObj):
 
     def size(self, name, dimensions=False):
         if name not in self.storage:
-            print(f'The key: {name} is not stored in the object!')
+            self.logger.error(f'The key: {name} is not stored in the object!')
             return -1
         h = self.storage[name]
         return h.shape if not dimensions else h.shape[dimensions]
 
     def trigger_code(self):
-        for k in self.storage.keys():            
-            self.outputs[k].set_value(self.outputs[k].xp.array(self.storage[k][self.current_time]))
-            self.outputs[k].generation_time = self.current_time
+        for k, storage_dict in self.storage.items():
+            # Check if data exists for current time
+            if self.current_time in storage_dict:
+                self.outputs[k].set_value(self.outputs[k].xp.array(storage_dict[self.current_time]))
+                self.outputs[k].generation_time = self.current_time
+            else:
+                self.logger.info(f'Warning: no data for key {k} at time {self.current_time}')
 
-        
+    def check_output_names(self):
+        # DataSource outputs are created dynamically from stored data files;
+        # skip the static output_names validation.
+        pass

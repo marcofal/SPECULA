@@ -5,13 +5,11 @@ from specula.base_data_obj import BaseDataObj
 from specula import cpuArray
 
 class PupData(BaseDataObj):
-    '''
+    """
+    Pupil data object.
+    This class holds the information about the pupils of a Pyramid WFS (or a Zernike WFS).
     PupData includes an ind_pup array with the pixel indexes of each pupil, of shape [index, pupil].
-
-    TODO change by passing all the initializing arguments as __init__ parameters,
-    to avoid the later initialization (see test/test_slopec.py for an example),
-    where things can be forgotten easily
-    '''
+    """
     def __init__(self,
                  ind_pup=None,
                  radius=None,
@@ -20,6 +18,14 @@ class PupData(BaseDataObj):
                  framesize=None,
                  target_device_idx: int=None,
                  precision: int=None):
+        """
+        Note
+        ----
+        
+        TODO change by passing all the initializing arguments as __init__ parameters,
+        to avoid the later initialization (see test/test_slopec.py for an example),
+        where things can be forgotten easily.
+        """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
         # Initialize with provided data or defaults
@@ -35,6 +41,8 @@ class PupData(BaseDataObj):
             framesize = np.zeros(2)
 
         self.ind_pup = self.to_xp(ind_pup).astype(int)
+        if len(np.shape(self.ind_pup)) == 1:
+            self.ind_pup = self.xp.reshape(self.ind_pup, [len(self.ind_pup),1])
         self.radius = cpuArray(radius, dtype=self.dtype)
         self.cx = cpuArray(cx, dtype=self.dtype)
         self.cy = cpuArray(cy, dtype=self.dtype)
@@ -57,13 +65,18 @@ class PupData(BaseDataObj):
     @property
     def n_subap(self):
         return self.ind_pup.shape[0]
+    
+    @property
+    def n_pupils(self):
+        return self.ind_pup.shape[1]
 
     def pupil_idx(self, n):
         return self.ind_pup[:, n]
 
     def zcorrection(self, indpup):
         tmp = indpup.copy()
-        tmp[:, 2], tmp[:, 3] = indpup[:, 3], indpup[:, 2]
+        if tmp.shape[1] == 4:
+            tmp[:, 2], tmp[:, 3] = indpup[:, 3], indpup[:, 2]
         return tmp
 
     def set_slopes_from_intensity(self, value: bool = True):
@@ -76,12 +89,11 @@ class PupData(BaseDataObj):
             # where A, B, C, D are the first, second, third and fourth
             # pupils respectively. This is the order expected by PyrSlopec,
             # and it is the correct order for slopes_from_intensity.
-            return self.xp.concatenate([
-                self.pupil_idx(0)[self.pupil_idx(0) >= 0],  # A
-                self.pupil_idx(1)[self.pupil_idx(1) >= 0],  # B  
-                self.pupil_idx(2)[self.pupil_idx(2) >= 0],  # C
-                self.pupil_idx(3)[self.pupil_idx(3) >= 0]   # D
-            ])
+            #     self.pupil_idx(0)[self.pupil_idx(0) >= 0],  # A
+            #     self.pupil_idx(1)[self.pupil_idx(1) >= 0],  # B  
+            #     self.pupil_idx(2)[self.pupil_idx(2) >= 0],  # C
+            #     self.pupil_idx(3)[self.pupil_idx(3) >= 0]   # D
+            return self.xp.concatenate([self.pupil_idx(i)[self.pupil_idx(i) >= 0] for i in range(self.n_pupils)])
         else:
             mask = self.single_mask()
             return self.xp.ravel_multi_index(self.xp.where(mask), mask.shape)
@@ -94,7 +106,7 @@ class PupData(BaseDataObj):
 
     def complete_mask(self):
         f = self.xp.zeros(self.framesize, dtype=self.dtype)
-        for i in range(4):
+        for i in range(self.n_pupils):
             self.xp.put(f, self.pupil_idx(i), 1)
         return f
 
@@ -109,9 +121,9 @@ class PupData(BaseDataObj):
         hdr = self.get_fits_header()
         fits.writeto(filename, np.zeros(2), hdr, overwrite=overwrite)
         fits.append(filename, cpuArray(self.ind_pup))
-        fits.append(filename, self.radius)
-        fits.append(filename, self.cx)
-        fits.append(filename, self.cy)
+        fits.append(filename, cpuArray(self.radius))
+        fits.append(filename, cpuArray(self.cx))
+        fits.append(filename, cpuArray(self.cy))
 
     @staticmethod
     def restore(filename, target_device_idx=None):
@@ -127,12 +139,12 @@ class PupData(BaseDataObj):
                 raise ValueError(f"Unknown version {version} in file {filename}")
 
             framesize = [int(hdr.get('FSIZEX')), int(hdr.get('FSIZEY'))]
-            ind_pup = hdul[1].data
-            radius = hdul[2].data
-            cx = hdul[3].data
+            ind_pup = hdul[1].data.copy()
+            radius = hdul[2].data.copy()
+            cx = hdul[3].data.copy()
             # Workaround for ANDES pupil files missing the last HDU
             if len(hdul) >= 5:
-                cy = hdul[4].data
+                cy = hdul[4].data.copy()
             else:
                 cy = None
 

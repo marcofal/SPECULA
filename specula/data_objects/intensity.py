@@ -5,7 +5,9 @@ from specula import cpuArray
 from specula.base_data_obj import BaseDataObj
 
 class Intensity(BaseDataObj):
-    '''Intensity field object'''
+    """
+    Intensity field data object.
+    """
     def __init__(self, 
                  dimx: int, 
                  dimy: int, 
@@ -15,7 +17,7 @@ class Intensity(BaseDataObj):
         Initialize an :class:`~specula.data_objects.intensity.Intensity` object.
         """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
-        self.i = self.xp.zeros((dimx, dimy), dtype=self.dtype)
+        self.i = self.xp.zeros((dimy, dimx), dtype=self.dtype)
 
     def get_value(self):
         '''
@@ -39,8 +41,8 @@ class Intensity(BaseDataObj):
         hdr = fits.Header()
         hdr['VERSION'] = 1
         hdr['OBJ_TYPE'] = 'Intensity'
-        hdr['DIMX'] = self.i.shape[0]
-        hdr['DIMY'] = self.i.shape[1]
+        hdr['DIMX'] = self.i.shape[1]
+        hdr['DIMY'] = self.i.shape[0]
         return hdr
 
     def save(self, filename, overwrite=True):
@@ -68,7 +70,7 @@ class Intensity(BaseDataObj):
             raise ValueError(f"Error: file {filename} does not contain an Intensity object")
         intensity = Intensity.from_header(hdr, target_device_idx=target_device_idx)
         with fits.open(filename) as hdul:
-            intensity.i = intensity.to_xp(hdul[1].data.copy())  # pylint: disable=no-member
+            intensity.i[:] = intensity.to_xp(hdul[1].data)  # pylint: disable=no-member
         return intensity
 
     def array_for_display(self):

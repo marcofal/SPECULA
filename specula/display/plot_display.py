@@ -1,4 +1,5 @@
 import numpy as np
+
 import matplotlib.pyplot as plt
 
 from specula.display.base_display import BaseDisplay
@@ -12,11 +13,16 @@ class PlotDisplay(BaseDisplay):
                  figsize=(8, 6),
                  histlen=200,
                  yrange=(0, 0),
-                 x_axis='time'):  # can be time or iteration
-
+                 x_axis='time',  # can be time or iteration
+                 labels=None,
+                 window: int=None,
+                 subplot: int=111,
+                 ):
         super().__init__(
             title=title,
-            figsize=figsize
+            figsize=figsize,
+            window=window,
+            subplot=subplot,
         )
 
         self._histlen = histlen
@@ -26,6 +32,8 @@ class PlotDisplay(BaseDisplay):
         self.lines = None
         self._x_axis = x_axis
         self._time_history = []
+        self._labels = labels  # store labels
+        self._legend_added = False  # track if legend was added
 
         # Setup inputs - can handle both single value and list of values
         self.inputs['value'] = InputValue(type=BaseValue, optional=True)
@@ -39,6 +47,16 @@ class PlotDisplay(BaseDisplay):
             return [self.local_inputs['value']]
         else:
             return []
+
+    def _get_label(self, index):
+        """Get label for a given index"""
+        # If labels were provided, use them
+        if self._labels is not None:
+            if index < len(self._labels):
+                return self._labels[index]
+
+        # Default fallback
+        return f'Input {index}'
 
     def _update_display(self, data_list):
         """Update display with list of data points"""
@@ -100,9 +118,11 @@ class PlotDisplay(BaseDisplay):
 
             # Create or update line
             if i >= len(self.lines):
-                # Create new line for this series
-                line = self.ax.plot(x, y, marker='.', 
-                                  color=plt.cm.tab10(i % 10))[0]
+                # Create new line for this series with label
+                label = self._get_label(i)  # removed unused data_list parameter
+                line = self.ax.plot(x, y, marker='.',
+                                  color=plt.cm.tab10(i % 10),
+                                  label=label)[0]
                 self.lines.append(line)
             else:
                 # Update existing line
@@ -131,19 +151,9 @@ class PlotDisplay(BaseDisplay):
         else:
             self.ax.set_xlabel('Iteration')
 
-        self._safe_draw()
+        # Add legend if we have multiple lines and haven't added it yet
+        if nValues > 1 and not self._legend_added:
+            self.ax.legend(loc='best')
+            self._legend_added = True
+
         self._count += 1
-
-    def reset_history(self):
-        """Reset the plot history"""
-        self._history = np.zeros(self._histlen)
-        self._count = 0
-        self.lines = None  # ← Reset come img
-        if self._opened:
-            self.ax.clear()
-
-    def close(self):
-        """Override to reset lines when closing"""
-        super().close()
-        self.lines = None
-        self._count = 0

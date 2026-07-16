@@ -1,6 +1,7 @@
 
 from specula import fuse
 from specula.processing_objects.psf import PSF
+from specula.base_processing_obj import OutputDesc
 from specula.base_value import BaseValue
 from specula.data_objects.simul_params import SimulParams
 
@@ -9,26 +10,54 @@ from specula.data_objects.simul_params import SimulParams
 def psf_abs2(v, xp):
     return xp.real(v * xp.conj(v))
 
+
 class PsfCoronagraph(PSF):
     """
-    Perfect coronagraph implementation.
-    It includes the standard PSF calculation since it inherits from the PSF class.
+    Perfect coronagraph processing object..
+    The implementation includes the standard PSF calculation as it inherits from the PSF class.
 
-    Args:
-        simul_params (SimulParams): Simulation parameters.
-        wavelengthInNm (float): Wavelength in nanometers.
-        nd (float, optional): Numerical aperture.
-        pixel_size_mas (float, optional): Pixel size in milliarcseconds.
-        start_time (float, optional): Start time for the integration.
+    Parameters
+    ----------
+    simul_params : SimulParams
+        Simulation parameters object.
+    wavelengthInNm : float [nm]
+        Wavelength at which to compute the PSF [nm].
+    nd : float [1], optional
+        Numerical density of the PSF (pixels per lambda/D). If None, it is calculated
+        based on the input ElectricField and pixel size.
+    use_average_field : bool
+        If True, the average electric field over the pupil is subtracted to compute the coronagraph PSF.
+        If False, the perfect coronagraph formula is applied for the computation. Default is True (average field removal).
+        The perfect coronagraph formula is Equation (1) in Cavarroc et al. 2006
+    pixel_size_mas : float [mas], optional
+        Desired pixel size of the PSF in milliarcseconds. If None, it is calculated
+        based on the input ElectricField and numerical density.
+    start_time : float [s], optional
+        Time (in seconds) after which to start integrating PSF and SR. Default is 0.0.
+    compute_profile_metrics : bool
+        If True, compute coronagraph radial-profile outputs for the instantaneous,
+        integrated and standard-deviation coronagraph PSFs.
+    compute_metrics_in_trigger : bool
+        If True, update those metrics after each trigger as well.
+    ee_radius_in_lambda_d : float or array-like [lambda/D], optional
+        Radius or radii in units of lambda/D at which to return the encircled energy.
+    target_device_idx : int [1], optional
+        Target device index for computation (CPU/GPU). Default is None (uses global setting).
+    precision : int [1], optional
+        Precision for computation (0 for double, 1 for single). Default is None (uses global setting).
     """
     def __init__(self,
                  simul_params: SimulParams,
                  wavelengthInNm: float,
                  nd: float=None,
+                 use_average_field:bool = True,
                  pixel_size_mas: float=None,
                  start_time: float=0.0,
+                 compute_profile_metrics: bool=False,
+                 compute_metrics_in_trigger: bool=False,
+                 ee_radius_in_lambda_d=None,
                  target_device_idx: int = None,
-                 precision: int = None
+                 precision: int = None,
                 ):
         super().__init__(
             simul_params=simul_params,
@@ -36,22 +65,51 @@ class PsfCoronagraph(PSF):
             nd=nd,
             pixel_size_mas=pixel_size_mas,
             start_time=start_time,
+            compute_profile_metrics=compute_profile_metrics,
+            compute_metrics_in_trigger=compute_metrics_in_trigger,
+            ee_radius_in_lambda_d=ee_radius_in_lambda_d,
             target_device_idx=target_device_idx,
-            precision=precision
+            precision=precision,
         )
+        self.use_average_field = use_average_field
 
         # Additional outputs for coronagraph
-        self.coronagraph_psf = BaseValue(target_device_idx=self.target_device_idx)
-        self.int_coronagraph_psf = BaseValue(target_device_idx=self.target_device_idx)
-        self.std_coronagraph_psf = BaseValue(target_device_idx=self.target_device_idx)
+        self.coronagraph_psf = BaseValue(target_device_idx=self.target_device_idx,
+                                         precision=precision)
+        self.int_coronagraph_psf = BaseValue(target_device_idx=self.target_device_idx,
+                                             precision=precision)
+        self.std_coronagraph_psf = BaseValue(target_device_idx=self.target_device_idx,
+                                             precision=precision)
+        self.coronagraph_psf_profile = BaseValue(target_device_idx=self.target_device_idx,
+                                                 precision=precision)
+        self.int_coronagraph_psf_profile = BaseValue(target_device_idx=self.target_device_idx,
+                                                     precision=precision)
+        self.std_coronagraph_psf_profile = BaseValue(target_device_idx=self.target_device_idx,
+                                                     precision=precision)
 
         self.outputs['out_coronagraph_psf'] = self.coronagraph_psf
         self.outputs['out_int_coronagraph_psf'] = self.int_coronagraph_psf
         self.outputs['out_std_coronagraph_psf'] = self.std_coronagraph_psf
+        self.outputs['out_coronagraph_psf_profile'] = self.coronagraph_psf_profile
+        self.outputs['out_int_coronagraph_psf_profile'] = self.int_coronagraph_psf_profile
+        self.outputs['out_std_coronagraph_psf_profile'] = self.std_coronagraph_psf_profile
 
         # Reference complex amplitude for perfect coronagraph
         self.ref_complex_amplitude = None
         self._sum_coronagraph_psf_squared = None # For std dev calculation
+
+    @classmethod
+    def output_names(cls):
+        result = super().output_names()
+        result.update({
+            'out_coronagraph_psf': OutputDesc(BaseValue, 'Instantaneous coronagraph PSF'),
+            'out_int_coronagraph_psf': OutputDesc(BaseValue, 'Time-integrated coronagraph PSF'),
+            'out_std_coronagraph_psf': OutputDesc(BaseValue, 'Standard deviation of coronagraph PSF over time'),
+            'out_coronagraph_psf_profile': OutputDesc(BaseValue, 'Radial profile of the instantaneous coronagraph PSF'),
+            'out_int_coronagraph_psf_profile': OutputDesc(BaseValue, 'Radial profile of the integrated coronagraph PSF'),
+            'out_std_coronagraph_psf_profile': OutputDesc(BaseValue, 'Radial profile of the std dev coronagraph PSF'),
+        })
+        return result
 
     def setup(self):
         super().setup()
@@ -84,12 +142,22 @@ class PsfCoronagraph(PSF):
         # Step 1: Calculate electric field from incoming phase screen
         electric_field = amp * self.xp.exp(1j * phase, dtype=self.complex_dtype)
 
-        # Step 2: Calculate and subtract the average electric field over the pupil
-        # Only consider pixels where amplitude > 0 (inside pupil)
+        # Step 2: Calculate  the field after the perfect coronagraph:
+        # if self.use_average_field is True, we subtract the average electric field over the pupil
+        # if self.use_average_field is False, we apply the perfect coronagraph formula.
+        # The two formulas are equivalent at high angular separations, but the average field
+        # removal produces infinite contrast near the PSF core.
         pupil_mask = amp > 0
         if self.xp.sum(pupil_mask) > 0:
-            avg_electric_field = self.xp.sum(electric_field * pupil_mask) / self.xp.sum(pupil_mask)
-            electric_field_corrected = electric_field - avg_electric_field * pupil_mask
+            if self.use_average_field is True: # average field removal
+                avg_electric_field = self.xp.sum(electric_field * pupil_mask) / self.xp.sum(pupil_mask)
+                electric_field_corrected = electric_field - avg_electric_field * pupil_mask
+            else: # perfect coronagraph formula (Cavarroc et al. 2006, Eq. 1)
+                mean_phase = self.xp.sum(phase * pupil_mask) / self.xp.sum(pupil_mask)
+                var_phase = self.xp.sum(((phase - mean_phase) ** 2) * pupil_mask) / self.xp.sum(pupil_mask)
+                ec = self.xp.exp(-var_phase, dtype=self.dtype)
+                coherent_core = self.xp.sqrt(ec) * self.xp.exp(1j * mean_phase, dtype=self.complex_dtype) * amp
+                electric_field_corrected = electric_field - coherent_core * pupil_mask
         else:
             electric_field_corrected = electric_field
 
@@ -130,10 +198,9 @@ class PsfCoronagraph(PSF):
             imwidth=self.out_size[0],
             normalize=True
         )
-
-        print(f'Coronagraph peak suppression: '
-              f'{self.coronagraph_psf.value.max()/self.psf.value.max():.2e}',
-              flush=True)
+        
+        self.logger.info(f'Coronagraph peak suppression: '
+                f'{self.coronagraph_psf.value.max()/self.psf.value.max():.2e}')
 
     def post_trigger(self):
         super().post_trigger()
@@ -144,14 +211,31 @@ class PsfCoronagraph(PSF):
 
         self.coronagraph_psf.generation_time = self.current_time
 
+        if self.compute_profile_metrics and self.compute_metrics_in_trigger:
+            self._set_radial_profile_output(
+                self.coronagraph_psf.value,
+                self.coronagraph_psf_profile,
+                norm_peak=self.psf.value.max()
+            )
+
     def finalize(self):
         super().finalize()
 
         if self.count > 0:
             self.int_coronagraph_psf.value /= self.count
-            self.std_coronagraph_psf.value = self.xp.sqrt(
-                self._sum_coronagraph_psf_squared / self.count - self.int_coronagraph_psf.value ** 2
-            )
+            variance = self._sum_coronagraph_psf_squared / self.count - self.int_coronagraph_psf.value ** 2
+            self.std_coronagraph_psf.value = self.xp.sqrt(self.xp.maximum(variance, 0))
+            if self.compute_profile_metrics:
+                self._set_radial_profile_output(
+                    self.int_coronagraph_psf.value,
+                    self.int_coronagraph_psf_profile,
+                    norm_peak=1.0, # do NOT normalize to 1
+                )
+                self._set_radial_profile_output(
+                    self.std_coronagraph_psf.value,
+                    self.std_coronagraph_psf_profile,
+                    norm_peak=1.0, # do NOT normalize to 1
+                )
 
         self.int_coronagraph_psf.generation_time = self.current_time
         self.std_coronagraph_psf.generation_time = self.current_time

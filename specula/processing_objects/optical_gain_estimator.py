@@ -1,17 +1,24 @@
 
-from specula.base_processing_obj import BaseProcessingObj
+from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.connections import InputValue
 from specula.base_value import BaseValue
 
 
 class OpticalGainEstimator(BaseProcessingObj):
     """
-    Optical Gain Estimator based on demodulated signals.
+    Optical Gain Estimator processing object.
+    Estimates optical gain based on demodulated signals.
+
     Uses two demodulated values (from delta-command and command) to estimate
     the optical gain of the system.
     
-    The optical gain is updated using:
+    By default, the optical gain is updated using:
     opticalGain = opticalGain - (1 - demod_delta_cmd/demod_cmd) * gain * opticalGain
+
+    When the optical gain is NOT compensated in closed loop
+    (open_loop_estimate = True), the estimator is a simple integrator:
+    opticalGain = opticalGain * (1-gain) + (demod_delta_cmd/demod_cmd) * gain
+
     """
 
     def __init__(self,
@@ -19,13 +26,16 @@ class OpticalGainEstimator(BaseProcessingObj):
                  initial_optical_gain: float = 1.0,
                  #idx_array: list = None, # not supported yet
                  #expression: list = None, # not supported yet
+                 open_loop_estimate: bool = False,
                  target_device_idx: int = None,
                  precision: int = None):
 
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
+        # Check that integrator gain has sensible values:
+        if gain < 0 or gain > 1:
+            raise ValueError(f'Integrator gain {gain:1.2f} is not supported, please choose a value between 0 and 1')
         self.gain = gain
-        self.initial_optical_gain = initial_optical_gain
 
         # Optional advanced output mapping
         # Not supported yet
@@ -34,19 +44,19 @@ class OpticalGainEstimator(BaseProcessingObj):
 
         # Internal optical gain storage
         self.optical_gain = BaseValue(
-            value=self.dtype(initial_optical_gain),
-            target_device_idx=target_device_idx
+            value=self.xp.atleast_1d(initial_optical_gain),
+            target_device_idx=target_device_idx,
+            precision=precision
         )
+        
+        self.open_loop = open_loop_estimate # boolean for open loop estimate 
 
         # Output value (can be different from internal optical_gain if using expressions)
         self.output = BaseValue(
-            value=self.dtype(initial_optical_gain),
-            target_device_idx=target_device_idx
+            value=self.xp.atleast_1d(initial_optical_gain),
+            target_device_idx=target_device_idx,
+            precision=precision
         )
-
-        # Initialize values
-        self.optical_gain.value = self.dtype(self.initial_optical_gain)
-        self.output.value = self.dtype(self.initial_optical_gain)
 
         # Inputs
         self.inputs['in_demod_delta_command'] = InputValue(type=BaseValue)
@@ -56,16 +66,21 @@ class OpticalGainEstimator(BaseProcessingObj):
         self.outputs['optical_gain'] = self.optical_gain
         self.outputs['output'] = self.output
 
-        self.verbose = False
+    @classmethod
+    def input_names(cls):
+        return {'in_demod_delta_command': InputDesc(BaseValue, 'Demodulated delta command vector for optical gain estimation'),
+                'in_demod_command': InputDesc(BaseValue, 'Demodulated absolute command vector for optical gain estimation')}
 
-    def prepare_trigger(self, t):
-        super().prepare_trigger(t)
-
-        self.current_demod_delta_cmd = self.local_inputs['in_demod_delta_command']
-        self.current_demod_cmd = self.local_inputs['in_demod_command']
+    @classmethod
+    def output_names(cls):
+        return {'optical_gain': OutputDesc(BaseValue, 'Estimated optical gain scalar or vector'),
+                'output': OutputDesc(BaseValue, 'Output command vector corrected by optical gain')}
 
     def trigger_code(self):
         t = self.current_time
+
+        self.current_demod_delta_cmd = self.local_inputs['in_demod_delta_command']
+        self.current_demod_cmd = self.local_inputs['in_demod_command']
 
         # Update optical gain if both inputs are ready
         if (self.current_demod_delta_cmd.generation_time == t and
@@ -87,17 +102,19 @@ class OpticalGainEstimator(BaseProcessingObj):
         # Avoid division by zero
         if self.xp.abs(demod_cmd) > 1e-12:
             ratio = demod_delta / demod_cmd
-            # Update formula from IDL code
-            updated_gain = current_gain - (1.0 - ratio) * self.gain * current_gain
 
-            self.optical_gain.value = updated_gain
+            if self.open_loop:
+                updated_gain = current_gain * (1-self.gain) + self.gain * ratio
+            else:
+                # Update formula from IDL code
+                updated_gain = current_gain - (1.0 - ratio) * self.gain * current_gain
+
+            self.optical_gain.value[:] = updated_gain
             self.optical_gain.generation_time = self.current_time
-
-            if self.verbose:
-                print(f"Optical gain updated: {float(current_gain):.6f} -> {float(updated_gain):.6f}")
+            
+            self.logger.info(f"Optical gain updated: {float(current_gain.squeeze()):.6f} -> {float(updated_gain.squeeze()):.6f}")
         else:
-            if self.verbose:
-                print("Warning: demod_command too small, skipping optical gain update")
+            self.logger.info("Warning: demod_command too small, skipping optical gain update")
 
     def _calculate_output(self, t):
         """
@@ -112,17 +129,7 @@ class OpticalGainEstimator(BaseProcessingObj):
             output = self.optical_gain.value
 
         # Ensure output doesn't exceed 1.0 (as in IDL code)
-        if hasattr(output, '__iter__'):
-            output = self.xp.minimum(output, 1.0)
-        else:
-            output = min(float(output), 1.0)
-
-        # Handle scalar case
-        if hasattr(output, '__len__') and len(output) == 1:
-            output = float(output[0])
-
-        self.output.value = output
+        _ = self.xp.minimum(output, 1.0, out=self.output.value)
         self.output.generation_time = t
 
-        if self.verbose:
-            print(f'Optical gain output: {output}')
+        self.logger.info(f'Optical gain output: {output}')

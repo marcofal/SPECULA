@@ -1,16 +1,21 @@
-
-
 import specula
 specula.init(0)  # Default target device
 
+import time
 import unittest
+import sys
+import types
+from typing import Union, Dict, List
 
 from specula import np
 from specula import cpuArray
 
 from specula.lib.utils import unravel_index_2d
 from specula.lib.utils import camelcase_to_snakecase
-from specula.lib.utils import get_type_hints  # Adjust import path
+from specula.lib.utils import get_type_hints
+from specula.lib.utils import remove_suffix
+from specula.lib.utils import make_tn
+from specula.lib.utils import resolve_type
 
 from test.specula_testlib import cpu_and_gpu
 
@@ -117,4 +122,120 @@ class TestGetTypeHints(unittest.TestCase):
         hints = get_type_hints(A)
         # Default __init__ has no annotations
         self.assertEqual(hints, {})
+
+    def test_remove_suffix(self):
+        self.assertEqual(remove_suffix('parameter_ref', '_ref'), 'parameter')
+        self.assertEqual(remove_suffix('parameter_data', '_data'), 'parameter')
+        self.assertEqual(remove_suffix('parameter_object', '_object'), 'parameter')
+        self.assertEqual(remove_suffix('parameter', '_ref'), 'parameter')  # No suffix to remove
+
+    def test_make_tn_format(self):
+        """Output should match YYYYMMDD_HHMMSS format"""
+        tn = make_tn()
+        pattern = r"^\d{8}_\d{6}$"
+        self.assertRegex(tn, pattern)
+
+    def test_make_tn_changes_over_time(self):
+        """Two calls separated by time should produce different values"""
+        tn1 = make_tn()
+        time.sleep(2)
+        tn2 = make_tn()
+        self.assertNotEqual(tn1, tn2)
+
+
+class Recmat:
+    pass
+
+
+class TestResolveType(unittest.TestCase):
+
+    # --- Basic behavior ---
+
+    def test_dict_type(self):
+        self.assertEqual(resolve_type(Dict[str, float]), float)
+
+    def test_list_type(self):
+        self.assertEqual(resolve_type(List[float]), float)
+
+    def test_union_type(self):
+        self.assertEqual(resolve_type(Union[float, None]), float)
+
+    def test_plain_type(self):
+        self.assertEqual(resolve_type(float), float)
+
+    def test_custom_type(self):
+        self.assertEqual(resolve_type(Recmat), Recmat)
+
+    # --- Custom types inside containers ---
+
+    def test_dict_custom(self):
+        self.assertEqual(resolve_type(Dict[str, Recmat]), Recmat)
+
+    def test_list_custom(self):
+        self.assertEqual(resolve_type(List[Recmat]), Recmat)
+
+    def test_union_custom(self):
+        self.assertEqual(resolve_type(Union[Recmat, None]), Recmat)
+
+    # --- PEP 604 unions (Python 3.10+) ---
+
+    @unittest.skipIf(sys.version_info < (3, 10), "Requires Python 3.10+")
+    def test_pep604_union(self):
+        self.assertEqual(resolve_type(Recmat | None), Recmat)
+
+    # --- require_list flag ---
+
+    def test_require_list_success(self):
+        self.assertEqual(resolve_type(List[int], require_list=True), int)
+
+    def test_require_list_failure_on_plain(self):
+        with self.assertRaises(TypeError):
+            resolve_type(int, require_list=True)
+
+    def test_require_list_failure_on_dict(self):
+        with self.assertRaises(TypeError):
+            resolve_type(Dict[str, int], require_list=True)
+
+    # --- require_dict flag ---
+
+    def test_require_dict_success(self):
+        self.assertEqual(resolve_type(Dict[str, int], require_dict=True), int)
+
+    def test_require_dict_failure_on_plain(self):
+        with self.assertRaises(TypeError):
+            resolve_type(int, require_dict=True)
+
+    def test_require_dict_failure_on_list(self):
+        with self.assertRaises(TypeError):
+            resolve_type(List[int], require_dict=True)
+
+    # --- Combined flags (edge cases) ---
+
+    def test_require_both_flags_fail(self):
+        # Cannot be both list and dict
+        with self.assertRaises(TypeError):
+            resolve_type(List[int], require_list=True, require_dict=True)
+
+    def test_require_list_with_union_fails(self):
+        with self.assertRaises(TypeError):
+            resolve_type(Union[int, None], require_list=True)
+
+    def test_require_dict_with_union_fails(self):
+        with self.assertRaises(TypeError):
+            resolve_type(Union[int, None], require_dict=True)
+
+    # --- Nested structures (documented behavior: one level only) ---
+
+    def test_nested_list(self):
+        self.assertEqual(resolve_type(List[List[int]]), List[int])
+
+    def test_nested_dict(self):
+        self.assertEqual(resolve_type(Dict[str, Dict[str, int]]), Dict[str, int])
+
+    # --- Union ordering behavior ---
+
+    def test_union_multiple_types(self):
+        self.assertEqual(resolve_type(Union[int, float, None]), int)
+
+
 

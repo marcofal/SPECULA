@@ -164,7 +164,7 @@ modalrec:
   nmodes:             4000                   # number of modes
   inputs:
     in_slopes: 'slopec.out_slopes'
-  outputs: ['out_modes', 'out_pseudo_ol_modes']
+  outputs: ['out_modes']
 
 
 gain_ramp:
@@ -214,7 +214,6 @@ temporal_filter:
 
 control:
   class:                'IirFilter'
-  simul_params_ref:     'main'
   delay:                2                      # Total temporal delay in time steps
   iir_filter_data_ref:  'temporal_filter'
   inputs:
@@ -261,7 +260,8 @@ data_store:
                  'res-modal_analysis.out_modes',
                  'pixels-detector.out_pixels',
                  'slopes-slopec.out_slopes',
-                 'modes-modalrec.out_modes']
+                 'modes-modalrec.out_modes',
+                 'sr-psf.out_sr']
 
 #sc_disp:
 #  class:            'SlopecDisplay'

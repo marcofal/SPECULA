@@ -5,9 +5,12 @@ from specula.base_data_obj import BaseDataObj
 
 
 class Pixels(BaseDataObj):
-    '''Pixels data object. Holds a 2d array of pixels, which can be signed or unsigned.'''
-
-    def __init__(self, 
+    """
+    Pixels data object.
+    Holds a 2d array of pixels, which can be signed or unsigned.
+    The number of bits per pixel can be set, up to 64 bits.
+    """
+    def __init__(self,
                  dimx: int,
                  dimy: int,
                  bits: int=16,
@@ -19,27 +22,36 @@ class Pixels(BaseDataObj):
 
         Parameters
         ----------
-        dimx : int
+        dimx : int [pixels]
             Number of pixels along the x-axis (width)
-        dimy : int
+        dimy : int [pixels]
             Number of pixels along the y-axis (height)
-        bits : int, optional
+        bits : int [1], optional
             Number of bits per pixel (default: 16).
-        signed : int, optional
+        signed : int [1], optional
             0 for unsigned, 1 for signed pixel values (default: 0).
-        target_device_idx : int, optional
+        target_device_idx : int [1], optional
             Device index for computation (default: None).
-        precision : int, optional
+        precision : int [1], optional
             Precision for computation (default: None).
         """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
+        self.resize(dimx, dimy, bits=bits, signed=signed)
 
+    def resize(self,
+               dimx: int,
+               dimy: int,
+               bits=16,
+               signed=0):
+        """
+        Resize the pixels array to new dimensions and optionally change the bits and signedness.
+        """
         if bits > 64:
             raise ValueError("Cannot create pixel object with more than 64 bits per pixel")
 
         self.signed = signed
         self.type = self._get_type(bits, signed)
-        self.pixels = self.xp.zeros((dimx, dimy), dtype=self.dtype)
+        self.pixels = self.xp.zeros((dimy, dimx), dtype=self.dtype)
         self.bpp = bits
         self.bytespp = (bits + 7) // 8  # bits self.xp.arounded to the next multiple of 8
 
@@ -57,7 +69,10 @@ class Pixels(BaseDataObj):
             [self.xp.uint64, self.xp.int64],
             [self.xp.uint64, self.xp.int64]
         ]
-        return type_matrix[(bits - 1) // 8][signed]
+        try:
+            return type_matrix[(bits - 1) // 8][signed]
+        except IndexError:
+            raise ValueError(f"Invalid combination of bits={bits} and signed={signed}")
 
     def get_value(self):
         '''Get the pixel values as a numpy/cupy array'''
@@ -85,12 +100,6 @@ class Pixels(BaseDataObj):
         """
         self.pixels *= factor
 
-    def set_size(self, size):
-        """
-        Set a new shape of the pixels array, discarding the old values.
-        """
-        self.pixels = self.xp.zeros(size, dtype=self.dtype)
-
     def get_fits_header(self):
         hdr = fits.Header()
         hdr['VERSION'] = 1
@@ -99,15 +108,15 @@ class Pixels(BaseDataObj):
         hdr['BPP'] = self.bpp
         hdr['BYTESPP'] = self.bytespp
         hdr['SIGNED'] = self.signed
-        hdr['DIMX'] = self.pixels.shape[0]
-        hdr['DIMY'] = self.pixels.shape[1]
+        hdr['DIMX'] = self.pixels.shape[1]
+        hdr['DIMY'] = self.pixels.shape[0]
         return hdr
 
     def save(self, filename, overwrite=True):
         hdr = self.get_fits_header()
         hdu = fits.PrimaryHDU(header=hdr)  # main HDU, empty, only header
         hdul = fits.HDUList([hdu])
-        hdul.append(fits.ImageHDU(data=cpuArray(self.pixels), name='SLOPES'))
+        hdul.append(fits.ImageHDU(data=cpuArray(self.pixels), name='PIXELS'))
         hdul.writeto(filename, overwrite=overwrite)
         hdul.close()  # Force close for Windows
 

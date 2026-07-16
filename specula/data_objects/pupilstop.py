@@ -9,8 +9,11 @@ from specula.data_objects.simul_params import SimulParams
 from specula import cpuArray
 
 class Pupilstop(Layer):
-    '''Pupil stop'''
-
+    """
+    Pupil stop data object.
+    This class holds the information about the pupil stop,
+    i.e. the amplitude mask in the pupil plane.
+    """
     def __init__(self,
                  simul_params: SimulParams,
                  input_mask = None,
@@ -40,7 +43,7 @@ class Pupilstop(Layer):
         self.obs_diam = obs_diam
 
         if self._input_mask is not None:
-            self._input_mask = self.to_xp(input_mask,dtype=self.dtype)
+            self._input_mask = self.to_xp(input_mask, dtype=self.dtype)
             mask_amp = self._input_mask
         else:
             mask_amp = make_mask(self.pixel_pupil, obs_diam, mask_diam, xp=self.xp)
@@ -118,7 +121,7 @@ class Pupilstop(Layer):
 
         pupilstop = Pupilstop.from_header(hdr, target_device_idx=target_device_idx)
         with fits.open(filename) as hdul:
-            pupilstop.field[0] = pupilstop.to_xp(hdul[1].data.copy(), dtype=pupilstop.dtype)  # pylint: disable=no-member
+            pupilstop.field[0, :] = pupilstop.to_xp(hdul[1].data, dtype=pupilstop.dtype)  # pylint: disable=no-member
             # phaseInNm is not used in Pupilstop
         return pupilstop
 

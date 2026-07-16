@@ -1,6 +1,3 @@
-
-
-
 import os
 import unittest
 from astropy.io import fits
@@ -15,7 +12,7 @@ from test.specula_testlib import cpu_and_gpu
 
 
 class TestBaseValue(unittest.TestCase):
-   
+
     def setUp(self):
         datadir = os.path.join(os.path.dirname(__file__), 'data')
         self.filename = os.path.join(datadir, 'test_basevalue.fits')
@@ -38,27 +35,6 @@ class TestBaseValue(unittest.TestCase):
         # Check FITS header for ndarray info
         hdr = fits.getheader(self.filename)
         self.assertEqual(hdr["NDARRAY"], 1)
-
-    @cpu_and_gpu
-    def test_save_restore_roundtrip_scalar(self, target_device_idx, xp):
-
-        try:
-            os.unlink(self.filename)
-        except FileNotFoundError:
-            pass
-
-        data = 3.1415
-        v = BaseValue(value=data, target_device_idx=target_device_idx)
-        v.save(self.filename)
-        v2 = BaseValue.restore(self.filename)
-
-        assert v2.value == 3.1415
-
-        # Check FITS header for ndarray info
-        hdr = fits.getheader(self.filename)
-        self.assertEqual(hdr["NDARRAY"], 0)
-        self.assertEqual(float(hdr["VALUE"]), 3.1415)
-
 
     @cpu_and_gpu
     def test_save_restore_roundtrip_scalar(self, target_device_idx, xp):
@@ -143,4 +119,23 @@ class TestBaseValue(unittest.TestCase):
         bv = BaseValue(value=val, target_device_idx=target_device_idx)
         xp.testing.assert_array_equal(bv.array_for_display(), val)
 
+    @cpu_and_gpu
+    def test_init_with_precision(self, target_device_idx, xp):
+        """Test initializing BaseValue with precision argument"""
+        val = xp.array([1, 2, 3])
+        bv = BaseValue(value=val, target_device_idx=target_device_idx, precision=1)
+        # Check that the dtype is as requested
+        self.assertEqual(str(bv.value.dtype), 'float32')
+        
+        bv64 = BaseValue(value=val, target_device_idx=target_device_idx, precision=0)
+        # Check that the dtype is as requested
+        self.assertEqual(str(bv64.value.dtype), 'float64')
 
+    @cpu_and_gpu
+    def test_init_scalar_with_precision(self, target_device_idx, xp):
+        """Test initializing BaseValue with scalar and precision argument"""
+        bv = BaseValue(value=3.14, target_device_idx=target_device_idx, precision=1)
+        self.assertEqual(str(type(bv.value)), "<class 'numpy.float32'>")
+        self.assertAlmostEqual(bv.value, 3.14, places=6)
+        bv64 = BaseValue(value=3.14, target_device_idx=target_device_idx, precision=0)
+        self.assertEqual(str(type(bv64.value)), "<class 'numpy.float64'>")

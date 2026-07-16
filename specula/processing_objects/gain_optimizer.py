@@ -2,7 +2,7 @@ import numpy as np
 from scipy import signal
 from functools import lru_cache
 
-from specula.base_processing_obj import BaseProcessingObj
+from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.connections import InputValue
 from specula.base_value import BaseValue
 from specula.data_objects.iir_filter_data import IirFilterData
@@ -14,7 +14,9 @@ import matplotlib.pyplot as plt
 
 class GainOptimizer(BaseProcessingObj):
     """
-    Gain optimizer for IIR filters based on modal gain optimization (GENDRON 1994).
+    Gain optimizer processing object. 
+    Implements IIR filters based on modal gain optimization (GENDRON 1994).
+
     This class optimizes the gains of an IIR filter by minimizing the residual variance
     in the closed-loop system using pseudo open-loop measurements.
     """
@@ -30,13 +32,11 @@ class GainOptimizer(BaseProcessingObj):
                  limit_inc: bool = True,         # Limit gain increments
                  ngains: int = 20,               # Number of gain values to test
                  running_mean: bool = False,     # Use running mean for PSD
-                 verbose: bool = True,          # Verbose output
                  target_device_idx: int = None,
                  precision: int = None):
 
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
-        self.simul_params = simul_params
         self.iir_filter_data = iir_filter_data
         self.time_step = simul_params.time_step
 
@@ -67,7 +67,8 @@ class GainOptimizer(BaseProcessingObj):
         # Outputs
         self.optimized_gain = BaseValue(
             value=self.xp.ones(self.nmodes, dtype=self.dtype),
-            target_device_idx=target_device_idx
+            target_device_idx=target_device_idx,
+            precision=precision
         )
         # Initialize optimal gain to ones
         self.optimized_gain.value = self.xp.ones(self.nmodes, dtype=self.dtype)
@@ -82,7 +83,15 @@ class GainOptimizer(BaseProcessingObj):
         # Outputs
         self.outputs['optimized_gain'] = self.optimized_gain
 
-        self.verbose = verbose
+    @classmethod
+    def input_names(cls):
+        return {'delta_comm': InputDesc(BaseValue, 'Input delta command vector from the WFS'),
+                'out_comm': InputDesc(BaseValue, 'Current output command vector from the controller'),
+                'optical_gain': InputDesc(BaseValue, 'Optional optical gain for compensation (optional)')}
+
+    @classmethod
+    def output_names(cls):
+        return {'optimized_gain': OutputDesc(BaseValue, 'Optimized gain vector for the IIR filter modes')}
 
     def prepare_trigger(self, t):
         super().prepare_trigger(t)
@@ -118,8 +127,7 @@ class GainOptimizer(BaseProcessingObj):
         Perform gain optimization based on accumulated history.
         """
         if len(self.delta_comm_hist) < 2:
-            if self.verbose:
-                print("Not enough history for optimization")
+            self.logger.warning("Not enough history for optimization")
             return
 
         # Convert history to arrays
@@ -172,9 +180,8 @@ class GainOptimizer(BaseProcessingObj):
         self.prev_optimized_gain = opt_gains.copy()
         self.optimized_gain.value[:] = opt_gains
 
-        if self.verbose:
-            print(f"Optimized gains at t={self.t_to_seconds(t):.3f}s: "
-                  f"mean={float(self.xp.mean(opt_gains)):.4f}")
+        self.logger.info(f"Optimized gains at t={self.t_to_seconds(t):.3f}s: "
+                f"mean={float(self.xp.mean(opt_gains)):.4f}")
 
     def _calculate_pseudo_open_loop(self, delta_comm_hist, comm_hist):
         """
@@ -218,12 +225,11 @@ class GainOptimizer(BaseProcessingObj):
         # Apply the maximum gain factor safety margin
         gmax_vec = self.to_xp(gmax_vec) * self.max_gain_factor
 
-        if self.verbose:
-            print("Maximum stable gains calculated:")
-            print(f"  Raw max gains: mean={float(self.xp.mean(gmax_vec/self.max_gain_factor)):.4f}, "
-                f"std={float(self.xp.std(gmax_vec/self.max_gain_factor)):.4f}")
-            print(f"  With safety factor ({self.max_gain_factor}): mean={float(self.xp.mean(gmax_vec)):.4f}, "
-                f"std={float(self.xp.std(gmax_vec)):.4f}")
+        self.logger.info("Maximum stable gains calculated:")
+        self.logger.info(f"  Raw max gains: mean={float(self.xp.mean(gmax_vec/self.max_gain_factor)):.4f}, "
+            f"std={float(self.xp.std(gmax_vec/self.max_gain_factor)):.4f}")
+        self.logger.info(f"  With safety factor ({self.max_gain_factor}): mean={float(self.xp.mean(gmax_vec)):.4f}, "
+            f"std={float(self.xp.std(gmax_vec)):.4f}")
 
         return gmax_vec
 
@@ -335,8 +341,9 @@ class GainOptimizer(BaseProcessingObj):
         den = self.to_xp(den_tuple, dtype=self.dtype)
 
         # Calculate transfer function
-        omega = 2 * np.pi * freq * t_int
-        z = self.xp.exp(1j * omega)
+        omega = 2 * self.dtype(np.pi) * freq * t_int
+        iu = self.complex_dtype(1j)
+        z = self.xp.exp(iu * omega, dtype=self.complex_dtype)
 
         # Calculate controller transfer function
         num_val = self.xp.polyval(num[::-1], z)

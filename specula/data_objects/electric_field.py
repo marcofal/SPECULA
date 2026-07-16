@@ -6,15 +6,20 @@ from specula.base_data_obj import BaseDataObj
 
 
 class ElectricField(BaseDataObj):
-    '''Electric field'''
-
+    """
+    Electric field data object.
+    This class represents a 2D electric field, storing both amplitude and phase information
+    for each pixel in a rectangular grid.
+    """
     def __init__(self,
                  dimx: int,
                  dimy: int,
                  pixel_pitch: float,
                  S0: float=0.0,
                  target_device_idx: int=None,
-                 precision: int=None):
+                 precision: int=None,
+                 wavelengthInNm: float=None,
+                 wavelengthToleranceInNm: float=0.1):
         """
         ElectricField data object.
 
@@ -24,18 +29,24 @@ class ElectricField(BaseDataObj):
 
         Parameters
         ----------
-        dimx : int
+        dimx : int [pixels]
             Number of pixels along the x-axis (width).
-        dimy : int
+        dimy : int [pixels]
             Number of pixels along the y-axis (height).
-        pixel_pitch : float
+        pixel_pitch : float [m]
             The dimension in meters of a pixel.
-        S0 : float, optional
+        S0 : float [ph/s/m^2/nm], optional
             Flux density in photons/s/m^2/nm (default: 0.0).
-        target_device_idx : int, optional
+        target_device_idx : int [1], optional
             Device index for computation (default: None).
-        precision : int, optional
+        precision : int [1], optional
             Precision for computation (default: None).
+        wavelengthInNm : float [nm], optional
+            Monochromatic wavelength tag in nanometers. If set, this electric
+            field is considered valid only at that wavelength.
+        wavelengthToleranceInNm : float [nm], optional
+            Absolute tolerance in nanometers used when checking wavelength
+            compatibility for wavelength-tagged fields (default: 0.1 nm).
 
         Attributes
         ----------
@@ -45,16 +56,40 @@ class ElectricField(BaseDataObj):
             Optional parameter for the field.
         field : xp.ndarray
             The electric field array of shape (2, dimx, dimy), with amplitude and phase.
+        wavelengthInNm : float or None
+            Monochromatic wavelength tag in nanometers.
+        wavelengthToleranceInNm : float
+            Absolute tolerance in nanometers for wavelength compatibility checks.
         """
         super().__init__(precision=precision, target_device_idx=target_device_idx)
         dimx = int(dimx)
         dimy = int(dimy)
         self.pixel_pitch = pixel_pitch
         self.S0 = S0
-        A = self.xp.ones((dimx, dimy), dtype=self.dtype)
-        phaseInNm = self.xp.zeros((dimx, dimy), dtype=self.dtype)
+        if wavelengthInNm is not None and wavelengthInNm <= 0:
+            raise ValueError('ElectricField wavelengthInNm must be >0 when provided')
+        if wavelengthToleranceInNm < 0:
+            raise ValueError('ElectricField wavelengthToleranceInNm must be >=0')
+        self.wavelength_in_nm = wavelengthInNm
+        self.wavelength_tolerance_in_nm = wavelengthToleranceInNm
+        A = self.xp.ones((dimy, dimx), dtype=self.dtype)
+        phaseInNm = self.xp.zeros((dimy, dimx), dtype=self.dtype)
         self.field = self.xp.stack((A, phaseInNm))
-    
+
+    def _check_wavelength_compatibility(self, requested_wavelength_in_nm):
+        if self.wavelength_in_nm is None:
+            return
+        if not np.isclose(float(requested_wavelength_in_nm),
+                          float(self.wavelength_in_nm),
+                          rtol=0.0,
+                          atol=float(self.wavelength_tolerance_in_nm)):
+            raise ValueError(
+                f'This ElectricField is wavelength-tagged at {self.wavelength_in_nm} nm '
+                f'(e.g. produced by a coronagraph) and can be evaluated only at that wavelength. '
+                f'Requested {requested_wavelength_in_nm} nm instead. '
+                f'Configured tolerance is +/-{self.wavelength_tolerance_in_nm} nm.'
+            )
+
     @property
     def A(self):
         return self.field[0]
@@ -72,17 +107,17 @@ class ElectricField(BaseDataObj):
         self.field[1, :, :] = self.to_xp(value)
 
     def __str__(self):
-        return 'A: '+ str(self.field[0]) + 'Phase: ' + str(self.field[1])
+        return 'A: ' + str(self.field[0]) + 'Phase: ' + str(self.field[1])
 
     def set_value(self, v):
         '''
         Set new values for phase and amplitude
-        
+
         Arrays are not reallocated
         '''
         # Should not expect a list, but a 2xNxN array
 
-        #assert len(v) == 2, "Input must be a sequence of [amplitude, phase]"
+        # assert len(v) == 2, "Input must be a sequence of [amplitude, phase]"
         assert v[0].shape == self.field[0].shape, \
             f"Error: input array shape {v[0].shape} does not match amplitude shape {self.field[0].shape}"
         assert v[1].shape == self.phaseInNm.shape, \
@@ -96,7 +131,7 @@ class ElectricField(BaseDataObj):
     def reset(self):
         '''
         Reset to zero phase and unitary amplitude
-        
+
         Arrays are not reallocated
         '''
         self.field[0] *= 0
@@ -106,12 +141,12 @@ class ElectricField(BaseDataObj):
     def resize(self, dimx, dimy, pitch=None):
         '''
         Resize the electric field
-        
+
         The pixel pitch and S0 are not changed
         '''
         dimx = int(dimx)
         dimy = int(dimy)
-        self.field = self.xp.zeros((2, dimx, dimy), dtype=self.dtype)
+        self.field = self.xp.zeros((2, dimy, dimx), dtype=self.dtype)
         if pitch is not None:
             self.pixel_pitch = pitch
         self.reset()
@@ -149,11 +184,12 @@ class ElectricField(BaseDataObj):
         xp.ndarray
             The phase of the electric field at the given wavelength.
         """
+        self._check_wavelength_compatibility(wavelengthInNm)
         if slicey is None:
             slicey = np.s_[:]
         if slicex is None:
             slicex = np.s_[:]
-        return self.field[1,slicey, slicex] * ((2 * self.xp.pi) / wavelengthInNm)
+        return self.field[1, slicey, slicex] * ((2 * self.xp.pi) / wavelengthInNm)
 
     def ef_at_lambda(self, wavelengthInNm, slicey=None, slicex=None, out=None):
         """
@@ -255,7 +291,10 @@ class ElectricField(BaseDataObj):
             idx = self.xp.unravel_index(idx, self.field[0].shape)
             xfrom, xto = self.xp.min(idx[0]), self.xp.max(idx[0])
             yfrom, yto = self.xp.min(idx[1]), self.xp.max(idx[1])
-        sub_ef = ElectricField(xto - xfrom, yto - yfrom, self.pixel_pitch, target_device_idx=self.target_device_idx)
+        sub_ef = ElectricField(xto - xfrom, yto - yfrom, self.pixel_pitch,
+                       target_device_idx=self.target_device_idx,
+                       wavelengthInNm=self.wavelength_in_nm,
+                       wavelengthToleranceInNm=self.wavelength_tolerance_in_nm)
         sub_ef.field[0, :] = self.field[0, xfrom:xto, yfrom:yto]
         sub_ef.field[1, :] = self.field[1, xfrom:xto, yfrom:yto]
         sub_ef.S0 = self.S0
@@ -281,10 +320,13 @@ class ElectricField(BaseDataObj):
         hdr = fits.Header()
         hdr['VERSION'] = 1
         hdr['OBJ_TYPE'] = 'ElectricField'
-        hdr['DIMX'] = self.field[0].shape[0]
-        hdr['DIMY'] = self.field[0].shape[1]
+        hdr['DIMX'] = self.field[0].shape[1]
+        hdr['DIMY'] = self.field[0].shape[0]
         hdr['PIXPITCH'] = self.pixel_pitch
         hdr['S0'] = self.S0
+        if self.wavelength_in_nm is not None:
+            hdr['WVLNM'] = self.wavelength_in_nm
+        hdr['WVLTOL'] = self.wavelength_tolerance_in_nm
         return hdr
 
     def save(self, filename, overwrite=True):
@@ -305,7 +347,12 @@ class ElectricField(BaseDataObj):
         dimy = hdr['DIMY']
         pitch = hdr['PIXPITCH']
         S0 = hdr['S0']
-        ef = ElectricField(dimx, dimy, pitch, S0, target_device_idx=target_device_idx)
+        wavelengthInNm = hdr.get('WVLNM', None)
+        wavelengthToleranceInNm = hdr.get('WVLTOL', 0.1)
+        ef = ElectricField(dimx, dimy, pitch, S0,
+                   target_device_idx=target_device_idx,
+               wavelengthInNm=wavelengthInNm,
+               wavelengthToleranceInNm=wavelengthToleranceInNm)
         return ef
 
     @staticmethod
@@ -315,8 +362,8 @@ class ElectricField(BaseDataObj):
             raise ValueError(f"Error: file {filename} does not contain an ElectricField object")
         ef = ElectricField.from_header(hdr, target_device_idx=target_device_idx)
         with fits.open(filename) as hdul:
-            ef.field[0] = ef.to_xp(hdul[1].data.copy())   # pylint: disable=no-member # created dyamically by pyfits
-            ef.field[1] = ef.to_xp(hdul[2].data.copy())   # pylint: disable=no-member # created dyamically by pyfits
+            ef.field[0, :] = ef.to_xp(hdul[1].data)   # pylint: disable=no-member # created dyamically by pyfits
+            ef.field[1, :] = ef.to_xp(hdul[2].data)   # pylint: disable=no-member # created dyamically by pyfits
         return ef
 
     def array_for_display(self):

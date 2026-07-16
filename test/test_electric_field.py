@@ -1,4 +1,3 @@
-
 import specula
 specula.init(0)  # Default target device
 
@@ -11,7 +10,10 @@ from specula import np
 from specula import cpuArray
 
 from specula.data_objects.electric_field import ElectricField
+from specula.data_objects.simul_params import SimulParams
 from specula.processing_objects.electric_field_combinator import ElectricFieldCombinator
+from specula.processing_objects.electric_field_reflection import ElectricFieldReflection
+from specula.processing_objects.lyot_coronagraph import LyotCoronagraph
 
 from test.specula_testlib import cpu_and_gpu
 
@@ -31,6 +33,13 @@ class TestElectricField(unittest.TestCase):
         assert id_field_before == id_field_after
 
     @cpu_and_gpu
+    def test_ef_shape(self, target_device_idx, xp):
+        dimx = 10
+        dimy = 20
+        obj = ElectricField(dimx, dimy, 0.1, S0=1, target_device_idx=target_device_idx)
+        self.assertEqual(obj.A.shape, (dimy, dimx))
+
+    @cpu_and_gpu
     def test_set_value_does_not_reallocate(self, target_device_idx, xp):
 
         ef = ElectricField(10,10, 0.1, S0=1, target_device_idx=target_device_idx)
@@ -43,9 +52,7 @@ class TestElectricField(unittest.TestCase):
         
         assert id_field_before == id_field_after
         
-
-    @cpu_and_gpu
-    def test_ef_combinator(self, target_device_idx, xp):
+    def _combinator_efs(self, target_device_idx, xp):
         pixel_pitch = 0.1
         pixel_pupil = 10
         ef1 = ElectricField(pixel_pupil,pixel_pupil, pixel_pitch, S0=1, target_device_idx=target_device_idx)
@@ -59,6 +66,19 @@ class TestElectricField(unittest.TestCase):
         A2[9, 9] = 0        
         ef2.A = A2
         ef2.phaseInNm = 3 * xp.ones((pixel_pupil, pixel_pupil))
+
+        ef3 = ElectricField(pixel_pupil, pixel_pupil, pixel_pitch, S0=3, target_device_idx=target_device_idx)
+        A3 = xp.ones((pixel_pupil, pixel_pupil))
+        A3[1, 1] = 0.5
+        ef3.A = A3
+        ef3.phaseInNm = 2 * xp.ones((pixel_pupil, pixel_pupil))
+
+        return ef1, ef2, ef3
+
+    @cpu_and_gpu
+    def test_ef_combinator(self, target_device_idx, xp):
+        
+        ef1, ef2, ef3 = self._combinator_efs(target_device_idx, xp)
 
         ef_combinator = ElectricFieldCombinator(
             target_device_idx=target_device_idx
@@ -82,6 +102,158 @@ class TestElectricField(unittest.TestCase):
         assert np.allclose(out_ef.phaseInNm, ef1.phaseInNm + ef2.phaseInNm)
         assert np.allclose(out_ef.S0, ef1.S0 + ef2.S0)
 
+        # Third electric field to verify the list handles > 2 items
+        ef3.generation_time = t
+
+        # Initialize a new combinator for the list test
+        ef_combinator_list = ElectricFieldCombinator(
+            target_device_idx=target_device_idx
+        )
+
+        # Pass the list of 3 electric fields into the new InputList
+        ef_combinator_list.inputs['in_ef_list'].set([ef1, ef2, ef3])
+
+        ef_combinator_list.check_ready(t)
+        ef_combinator_list.setup()
+        ef_combinator_list.trigger()
+        ef_combinator_list.post_trigger()
+
+        out_ef_list = ef_combinator_list.outputs['out_ef']
+
+        # Assert that all 3 fields were properly combined
+        assert np.allclose(out_ef_list.A, ef1.A * ef2.A * ef3.A)
+        assert np.allclose(out_ef_list.phaseInNm, ef1.phaseInNm + ef2.phaseInNm + ef3.phaseInNm)
+        assert np.allclose(out_ef_list.S0, ef1.S0 + ef2.S0 + ef3.S0)
+
+    @cpu_and_gpu
+    def test_ef_combinator_raises_if_both_list_and_pair_inputs_are_provided(self, target_device_idx, xp):
+        ef_combinator_all = ElectricFieldCombinator(
+            target_device_idx=target_device_idx
+        )
+
+        ef1, ef2, ef3 = self._combinator_efs(target_device_idx, xp)
+
+        ef_combinator_all.inputs['in_ef1'].set(ef1)
+        ef_combinator_all.inputs['in_ef2'].set(ef2)
+        ef_combinator_all.inputs['in_ef_list'].set([ef1, ef2, ef3])
+
+        ef_combinator_all.check_ready(t=1)
+        with self.assertRaises(ValueError):
+            ef_combinator_all.setup()
+
+    @cpu_and_gpu
+    def test_ef_combinator_raises_if_no_list_and_pair_inputs_are_provided(self, target_device_idx, xp):
+        ef_combinator_all = ElectricFieldCombinator(
+            target_device_idx=target_device_idx
+        )
+
+        ef_combinator_all.check_ready(t=1)
+        with self.assertRaises(ValueError):
+            ef_combinator_all.setup()
+
+    @cpu_and_gpu
+    def test_ef_combinator_raises_if_only_one_of_pair_inputs_is_provided(self, target_device_idx, xp):
+        ef_combinator_all = ElectricFieldCombinator(
+            target_device_idx=target_device_idx
+        )
+
+        ef1, ef2, ef3 = self._combinator_efs(target_device_idx, xp)
+
+        ef_combinator_all.inputs['in_ef1'].set(ef1)
+
+        ef_combinator_all.check_ready(t=1)
+        with self.assertRaises(ValueError):
+            ef_combinator_all.setup()
+
+    @cpu_and_gpu
+    def test_ef_combinator_raises_if_differing_shape_pair(self, target_device_idx, xp):
+        ef_combinator_all = ElectricFieldCombinator(
+            target_device_idx=target_device_idx
+        )
+
+        ef1, ef2, ef3 = self._combinator_efs(target_device_idx, xp)
+        ef1.resize(100, 100, 1)
+
+        ef_combinator_all.inputs['in_ef1'].set(ef1)
+        ef_combinator_all.inputs['in_ef2'].set(ef2)
+
+        ef_combinator_all.check_ready(t=1)
+        with self.assertRaises(ValueError):
+            ef_combinator_all.setup()
+
+    @cpu_and_gpu
+    def test_ef_combinator_raises_if_differing_shape_list(self, target_device_idx, xp):
+        ef_combinator_all = ElectricFieldCombinator(
+            target_device_idx=target_device_idx
+        )
+
+        ef1, ef2, ef3 = self._combinator_efs(target_device_idx, xp)
+        ef1.resize(100, 100, 1)
+        ef_combinator_all.inputs['in_ef_list'].set([ef1, ef2, ef3])
+
+
+    @cpu_and_gpu
+    def test_ef_combinator_raises_if_differing_pitch_pair(self, target_device_idx, xp):
+        ef_combinator_all = ElectricFieldCombinator(
+            target_device_idx=target_device_idx
+        )
+
+        ef1, ef2, ef3 = self._combinator_efs(target_device_idx, xp)
+        ef1.pixel_pitch = 3.1415
+
+        ef_combinator_all.inputs['in_ef1'].set(ef1)
+        ef_combinator_all.inputs['in_ef2'].set(ef2)
+
+        ef_combinator_all.check_ready(t=1)
+        with self.assertRaises(ValueError):
+            ef_combinator_all.setup()
+
+    @cpu_and_gpu
+    def test_ef_combinator_raises_if_differing_pitch_list(self, target_device_idx, xp):
+        ef_combinator_all = ElectricFieldCombinator(
+            target_device_idx=target_device_idx
+        )
+
+        ef1, ef2, ef3 = self._combinator_efs(target_device_idx, xp)
+        ef1.pixel_pitch = 3.1415
+
+        ef_combinator_all.inputs['in_ef_list'].set([ef1, ef2, ef3])
+
+        ef_combinator_all.check_ready(t=1)
+        with self.assertRaises(ValueError):
+            ef_combinator_all.setup()
+
+    @cpu_and_gpu
+    def test_ef_reflection(self, target_device_idx, xp):
+        pixel_pitch = 0.1
+
+        dimx = 10
+        dimy = 20
+
+        ef1 = ElectricField(dimx, dimy, pixel_pitch, S0=1, target_device_idx=target_device_idx)
+        ef1.A[:] = 1
+        ef1.phaseInNm[:] = 1
+
+        ef_reflection = ElectricFieldReflection(
+            target_device_idx=target_device_idx
+        )
+
+        ef_reflection.inputs['in_ef'].set(ef1)
+
+        t = 1
+        ef1.generation_time = t
+
+        ef_reflection.check_ready(t)
+        ef_reflection.setup()
+        ef_reflection.trigger()
+        ef_reflection.post_trigger()
+
+        out_ef = ef_reflection.outputs['out_ef']
+
+        assert np.allclose(out_ef.A, ef1.A)
+        assert np.allclose(out_ef.phaseInNm, -1*ef1.phaseInNm)
+        assert out_ef.A.shape == (dimy, dimx)
+
     @cpu_and_gpu
     def test_save_and_restore(self, target_device_idx, xp):
         pixel_pupil = 10
@@ -89,6 +261,8 @@ class TestElectricField(unittest.TestCase):
         S0 = 1.23
 
         ef = ElectricField(pixel_pupil, pixel_pupil, pixel_pitch, S0=S0, target_device_idx=target_device_idx)
+        ef.wavelength_in_nm = 890.0
+        ef.wavelength_tolerance_in_nm = 0.07
         ef.A = xp.arange(pixel_pupil * pixel_pupil, dtype=ef.dtype).reshape(pixel_pupil, pixel_pupil)
         ef.phaseInNm = xp.arange(pixel_pupil * pixel_pupil, dtype=ef.dtype).reshape(pixel_pupil, pixel_pupil) * 0.5
 
@@ -105,11 +279,13 @@ class TestElectricField(unittest.TestCase):
             assert np.allclose(cpuArray(ef.phaseInNm), cpuArray(ef2.phaseInNm))
             assert ef.pixel_pitch == ef2.pixel_pitch
             assert ef.S0 == ef2.S0
+            assert ef.wavelength_in_nm == ef2.wavelength_in_nm
+            assert ef.wavelength_tolerance_in_nm == ef2.wavelength_tolerance_in_nm
 
             # Force cleanup for Windows
             del ef2
             gc.collect()
-            
+
     @cpu_and_gpu
     def test_set_value(self, target_device_idx, xp):
         pixel_pupil = 10
@@ -148,20 +324,94 @@ class TestElectricField(unittest.TestCase):
 
     @cpu_and_gpu
     def test_fits_header(self, target_device_idx, xp):
-        pixel_pupil = 10
+        dimx = 10
+        dimy = 20
         pixel_pitch = 0.1
         S0 = 1.23
-        ef = ElectricField(pixel_pupil, pixel_pupil, pixel_pitch, S0=S0, target_device_idx=target_device_idx)
+        ef = ElectricField(dimx, dimy, pixel_pitch, S0=S0, target_device_idx=target_device_idx)
 
         hdr = ef.get_fits_header()
 
         assert hdr['VERSION'] == 1
         assert hdr['OBJ_TYPE'] == 'ElectricField'
-        assert hdr['DIMX'] == pixel_pupil
-        assert hdr['DIMY'] == pixel_pupil
+        assert hdr['DIMX'] == dimx
+        assert hdr['DIMY'] == dimy
         assert hdr['PIXPITCH'] == pixel_pitch
         assert hdr['S0'] == S0        
-        
+
+    @cpu_and_gpu
+    def test_phi_at_lambda_fails_on_wavelength_mismatch(self, target_device_idx, xp):
+        ef = ElectricField(8, 8, 0.1, target_device_idx=target_device_idx,
+                           wavelengthInNm=650.0)
+        with self.assertRaisesRegex(ValueError, 'wavelength-tagged'):
+            ef.phi_at_lambda(500.0)
+
+    @cpu_and_gpu
+    def test_phi_at_lambda_uses_default_tolerance(self, target_device_idx, xp):
+        ef = ElectricField(8, 8, 0.1, target_device_idx=target_device_idx,
+                           wavelengthInNm=650.0)
+        ef.phi_at_lambda(650.05)
+        with self.assertRaisesRegex(ValueError, 'Configured tolerance'):
+            ef.phi_at_lambda(650.11)
+
+    @cpu_and_gpu
+    def test_phi_at_lambda_uses_configurable_tolerance(self, target_device_idx, xp):
+        ef = ElectricField(8, 8, 0.1, target_device_idx=target_device_idx,
+                           wavelengthInNm=650.0, wavelengthToleranceInNm=0.25)
+        ef.phi_at_lambda(650.2)
+        with self.assertRaisesRegex(ValueError, 'Configured tolerance'):
+            ef.phi_at_lambda(650.26)
+
+    @cpu_and_gpu
+    def test_init_fails_with_non_positive_wavelength_tag(self, target_device_idx, xp):
+        with self.assertRaisesRegex(ValueError, 'must be >0'):
+            ElectricField(8, 8, 0.1, target_device_idx=target_device_idx,
+                          wavelengthInNm=0.0)
+
+    @cpu_and_gpu
+    def test_init_fails_with_negative_wavelength_tolerance(self, target_device_idx, xp):
+        with self.assertRaisesRegex(ValueError, 'must be >=0'):
+            ElectricField(8, 8, 0.1, target_device_idx=target_device_idx,
+                          wavelengthToleranceInNm=-1e-3)
+
+    @cpu_and_gpu
+    def test_phi_at_lambda_skips_check_when_wavelength_is_none(self, target_device_idx, xp):
+        ef = ElectricField(8, 8, 0.1, target_device_idx=target_device_idx)
+        phi_500 = ef.phi_at_lambda(500.0)
+        phi_700 = ef.phi_at_lambda(700.0)
+        self.assertEqual(phi_500.shape, ef.phaseInNm.shape)
+        self.assertEqual(phi_700.shape, ef.phaseInNm.shape)
+
+    @cpu_and_gpu
+    def test_coronagraph_output_is_wavelength_tagged(self, target_device_idx, xp):
+        pixel_pupil = 32
+        pixel_pitch = 0.05
+        wavelength_in_nm = 750.0
+        simul_params = SimulParams(pixel_pupil=pixel_pupil, pixel_pitch=pixel_pitch)
+
+        lyot = LyotCoronagraph(
+            simul_params=simul_params,
+            wavelengthInNm=wavelength_in_nm,
+            iwaInLambdaOverD=0.0,
+            target_device_idx=target_device_idx,
+        )
+
+        ef = ElectricField(pixel_pupil, pixel_pupil, pixel_pitch,
+                           target_device_idx=target_device_idx)
+        ef.A[:] = 1.0
+        ef.phaseInNm[:] = 0.0
+        ef.generation_time = 1
+
+        lyot.inputs['in_ef'].set(ef)
+        lyot.setup()
+        lyot.check_ready(1)
+        lyot.prepare_trigger(1)
+        lyot.trigger_code()
+        lyot.post_trigger()
+
+        out_ef = lyot.outputs['out_ef']
+        self.assertEqual(out_ef.wavelength_in_nm, wavelength_in_nm)
+
     @cpu_and_gpu
     def test_with_invalid_shape(self, target_device_idx, xp):
         pixel_pupil = 10

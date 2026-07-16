@@ -1,4 +1,3 @@
-
 import specula
 specula.init(0)  # Default target device
 
@@ -7,7 +6,10 @@ import unittest
 from unittest.mock import MagicMock
 
 from specula import cp, cpuArray
+from specula.base_value import BaseValue
+from specula.connections import InputList, InputValue
 from specula.base_processing_obj import BaseProcessingObj
+from specula.base_processing_obj import InputDesc, OutputDesc
 
 from test.specula_testlib import cpu_and_gpu
 
@@ -100,6 +102,28 @@ class TestBaseProcessingObj(unittest.TestCase):
 
         obj.current_time = 0
         self.assertTrue(obj.checkInputTimes())
+
+    @cpu_and_gpu
+    def test_check_input_times_returns_true_for_invalid_optional_inputs(self, target_device_idx, xp):
+        obj = BaseProcessingObj(target_device_idx=target_device_idx)
+
+        obj.inputs['test1'] = InputValue(type=BaseValue, optional=True)
+        obj.inputs['test2'] = InputValue(type=BaseValue, optional=True)
+        self.assertTrue(obj.checkInputTimes())
+
+    @cpu_and_gpu
+    def test_check_input_times_returns_false_for_valid_optional_inputs(self, target_device_idx, xp):
+        obj = BaseProcessingObj(target_device_idx=target_device_idx)
+
+        obj.inputs['test1'] = InputValue(type=BaseValue, optional=True)
+        obj.inputs['test2'] = InputValue(type=BaseValue, optional=True)
+
+        value = BaseValue()
+        obj.inputs['test1'].set(value)
+        value.generation_time = 1 # Simulate non-refreshed inputs
+
+        obj.current_time = 2
+        self.assertFalse(obj.checkInputTimes())
 
     @cpu_and_gpu
     def test_post_trigger_resets_inputs_changed(self, target_device_idx, xp):
@@ -244,3 +268,110 @@ class TestBaseProcessingObj(unittest.TestCase):
         obj._target_device.use.assert_called_once()
         # No synchronization since there's no graph
         obj.stream.synchronize.assert_not_called()
+
+    def test_check_input_names_raises_if_input_missing(self):
+        obj = BaseProcessingObj(target_device_idx=-1)
+        obj.input_names = MagicMock(return_value={"input1": InputDesc(BaseValue, 'Some description')})
+        obj.inputs = {}
+        with self.assertRaises(ValueError):
+            obj.check_input_names()
+
+    def test_check_input_names_raises_if_input_wrong_type(self):
+        obj = BaseProcessingObj(target_device_idx=-1)
+        obj.input_names = MagicMock(return_value={"input1": InputDesc(BaseValue, 'Some description')})
+        obj.inputs = {"input1": "not an InputValue"}
+        with self.assertRaises(TypeError):
+            obj.check_input_names()
+    
+    def test_check_input_names_raises_if_input_wrong_type_in_list(self):
+        obj = BaseProcessingObj(target_device_idx=-1)
+        obj.input_names = MagicMock(return_value={"input1": InputDesc(BaseValue, 'Some description')})
+        obj.inputs = {"input1": ["not an InputValue"]}
+        with self.assertRaises(TypeError):
+            obj.check_input_names()
+
+    def test_check_input_names_passes_for_valid_inputs(self):
+        obj = BaseProcessingObj(target_device_idx=-1)
+        obj.input_names = MagicMock(return_value={"input1": (BaseValue, 'desc1'), "input2": (BaseValue, 'desc2')})
+        obj.inputs = {"input1": InputValue(type=BaseValue), "input2": InputList(type=BaseValue)}
+        try:
+            obj.check_input_names()  # Should not raise
+        except Exception as e:
+            self.fail(f"check_input_names raised an exception unexpectedly: {e}")
+
+    def test_check_output_names_raises_if_output_missing(self):
+        obj = BaseProcessingObj(target_device_idx=-1)
+        obj.output_names = MagicMock(return_value={"output1": BaseValue})
+        obj.outputs = {}
+        with self.assertRaises(ValueError):
+            obj.check_output_names()
+    
+    def test_check_output_names_passes_for_valid_outputs(self):
+        obj = BaseProcessingObj(target_device_idx=-1)
+        obj.output_names = MagicMock(return_value={"output1": (BaseValue, 'desc1'), "output2": (BaseValue, 'desc2')})
+        obj.outputs = {"output1": BaseValue(), "output2": BaseValue()}
+        try:
+            obj.check_output_names()  # Should not raise
+        except Exception as e:
+            self.fail(f"check_output_names raised an exception unexpectedly: {e}")
+
+    def test_sanity_check_calls_input_and_output_checks(self):
+        obj = BaseProcessingObj(target_device_idx=-1)
+        obj.check_input_names = MagicMock()
+        obj.check_output_names = MagicMock()
+
+        try:
+            obj.sanity_check()  # Should not raise
+        except Exception as e:
+            self.fail(f"sanity_check raised an exception unexpectedly: {e}")
+
+        obj.check_input_names.assert_called_once()
+        obj.check_output_names.assert_called_once()
+
+    def test_check_output_names_supports_placeholder_pattern_multiple_outputs(self):
+        obj = BaseProcessingObj(target_device_idx=-1)
+        obj.output_names = MagicMock(return_value={
+            "out_modes_{sensor_idx}": (BaseValue, "Dynamic outputs"),
+        })
+        obj.outputs = {
+            "out_modes_0": BaseValue(),
+            "out_modes_1": BaseValue(),
+        }
+
+        obj.check_output_names()  # Should not raise
+
+    def test_check_output_names_supports_placeholder_pattern(self):
+        obj = BaseProcessingObj(target_device_idx=-1)
+        obj.output_names = MagicMock(return_value={
+            "out_modes_{sensor_idx}": (BaseValue, "Dynamic outputs"),
+        })
+        obj.outputs = {
+            "out_modes_0": BaseValue(),
+            "out_modes_3": BaseValue(),
+        }
+
+        obj.check_output_names()  # Should not raise
+
+    def test_check_input_names_supports_placeholder_pattern(self):
+        obj = BaseProcessingObj(target_device_idx=-1)
+        obj.input_names = MagicMock(return_value={
+            "in_sensor_{idx}": (BaseValue, "Per-sensor input (optional)"),
+        })
+        obj.inputs = {
+            "in_sensor_0": InputValue(type=BaseValue),
+            "in_sensor_1": InputValue(type=BaseValue),
+        }
+
+        obj.check_input_names()  # Should not raise
+
+    def test_check_output_names_pattern_missing_raises(self):
+        obj = BaseProcessingObj(target_device_idx=-1)
+        obj.output_names = MagicMock(return_value={
+            "out_modes_{sensor_idx}": (BaseValue, "Dynamic outputs"),
+        })
+        obj.outputs = {
+            "out_other": BaseValue(),
+        }
+
+        with self.assertRaises(ValueError):
+            obj.check_output_names()

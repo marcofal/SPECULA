@@ -1,7 +1,7 @@
 import os
 import numpy as np
 
-from specula.base_processing_obj import BaseProcessingObj
+from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.processing_objects.dm import DM
 from specula.processing_objects.modulated_pyramid import ModulatedPyramid
 from specula.processing_objects.pyr_slopec import PyrSlopec
@@ -16,9 +16,12 @@ from specula.connections import InputValue
 
 
 class ImCalibrator(BaseProcessingObj):
+    """
+    Interaction matrix calibrator processing object.
+    """
     def __init__(self,
-                 nmodes: int,         # TODO =0,
-                 data_dir: str,       # TODO = "",         # Set by main simul object
+                 nmodes: int,
+                 data_dir: str,    # Set by main simul object
                  im_tag: str='',
                  first_mode: int = 0,
                  overwrite: bool = False,
@@ -60,6 +63,16 @@ class ImCalibrator(BaseProcessingObj):
         self.single_im = [Intmat(nmodes=1, nslopes=0,
                                  target_device_idx=self.target_device_idx) for i in range(nmodes)]
         self.outputs['out_single_im'] = self.single_im
+
+    @classmethod
+    def input_names(cls):
+        return {'in_slopes': InputDesc(Slopes, 'Input wavefront slopes measured during push-pull calibration'),
+                'in_commands': InputDesc(BaseValue, 'Input command vector applied to the DM during calibration')}
+
+    @classmethod
+    def output_names(cls):
+        return {'out_intmat': OutputDesc(Intmat, 'Accumulated interaction matrix'),
+                'out_single_im': OutputDesc(list, 'Per-mode interaction matrix contributions (list)')}
 
     @staticmethod
     def generate_im_tag(pupilstop, source, dm, sensor, slopec, nmodes, first_mode=0):
@@ -157,8 +170,7 @@ class ImCalibrator(BaseProcessingObj):
         # First iteration initialization
         if self.intmat.nslopes == 0:
             self.intmat.set_nslopes(len(slopes))
-            if self.verbose:
-                print(f"Initialized interaction matrix: {self.im.value.shape}")
+            self.logger.debug(f"Initialized interaction matrix: {self.intmat.get_value().shape}")
             for i in range(self.nmodes):
                 self.single_im[i].set_nslopes(len(slopes))
 
@@ -173,7 +185,7 @@ class ImCalibrator(BaseProcessingObj):
         in_slopes_object = self.local_inputs['in_slopes']
 
         for mode in range(self.nmodes):
-            self.single_im[mode].modes[0] = self.intmat.modes[mode].copy()
+            self.single_im[mode].modes[0] = self.intmat.modes[mode]
             self.single_im[mode].single_mask = in_slopes_object.single_mask
             self.single_im[mode].display_map = in_slopes_object.display_map
             self.single_im[mode].generation_time = self.current_time

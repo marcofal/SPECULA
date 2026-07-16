@@ -3,6 +3,9 @@ import tempfile
 import unittest
 from unittest.mock import patch, MagicMock
 
+import specula
+specula.init(0)  # Default target device
+
 from specula.data_objects.intensity import Intensity
 from specula.data_objects.pixels import Pixels
 from specula.data_objects.subap_data import SubapData
@@ -14,8 +17,8 @@ from test.specula_testlib import cpu_and_gpu
 class TestShSubapCalibrator(unittest.TestCase):
 
     @cpu_and_gpu
-    def test_init_requires_tag_or_template(self, target_device_idx, xp):
-        with self.assertRaises(ValueError):
+    def test_init_requires_tag(self, target_device_idx, xp):
+        with self.assertRaises(TypeError):
             ShSubapCalibrator(
                 subap_on_diameter=4,
                 data_dir=".",

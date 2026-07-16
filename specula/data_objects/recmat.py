@@ -7,9 +7,11 @@ from specula.base_data_obj import BaseDataObj
 
 
 class Recmat(BaseDataObj):
-    '''
-    Reconstruction matrix axes are [modes, slopes]
-    '''
+    """
+    Reconstruction matrix data object.
+    This class holds the information about the reconstruction matrix,
+    which maps slopes to modes. The reconstruction matrix axes are [modes, slopes].
+    """
     def __init__(self,
                  recmat,
                  modes2recLayer=None,  # TODO not used
@@ -51,7 +53,7 @@ class Recmat(BaseDataObj):
                 proj[idx, :] = self.xp.identity(len(idx))
                 self.proj_list.append(proj)
             self.modes2recLayer = modes2recLayer
-            
+
     def reduce_size(self, nModesToBeDiscarded):
         if nModesToBeDiscarded >= self.nmodes:
             raise ValueError(f"nModesToBeDiscarded should be less than nmodes (<{self.nmodes})")
@@ -82,19 +84,19 @@ class Recmat(BaseDataObj):
 
     @staticmethod
     def restore(filename, target_device_idx=None):
-        hdr = fits.getheader(filename)
-        version = int(hdr['VERSION'])
-        if version != 1:
-            raise ValueError(f"Error: unknown version {version} in file {filename}")
-
-        norm_factor = float(hdr['NORMFACT'])
-        recmat = fits.getdata(filename, ext=1)
         with fits.open(filename) as hdul:
+            hdr = hdul[0].header
+            version = int(hdr['VERSION'])
+            if version != 1:
+                raise ValueError(f"Error: unknown version {version} in file {filename}")
+
+            norm_factor = float(hdr['NORMFACT'])
+            recmat = hdul[1].data.copy()
             num_ext = len(hdul)
-        if num_ext >= 3:                
-            mode2reLayer = fits.getdata(filename, ext=2)
-        else:
-            mode2reLayer = None
+            if num_ext >= 3:
+                mode2reLayer = hdul[2].data.copy()
+            else:
+                mode2reLayer = None
         return Recmat(recmat, mode2reLayer, norm_factor, target_device_idx=target_device_idx)
 
 

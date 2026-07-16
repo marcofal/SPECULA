@@ -1,0 +1,186 @@
+import os
+import sys
+import unittest
+import matplotlib.pyplot as plt
+
+import specula
+specula.init(0)  # Default target device
+
+from specula import cpuArray
+
+from specula.data_objects.source import Source
+from specula.processing_objects.wave_generator import WaveGenerator
+from specula.processing_objects.atmo_infinite_evolution import AtmoInfiniteEvolution
+from specula.processing_objects.atmo_propagation import AtmoPropagation
+from specula.processing_objects.modal_analysis import ModalAnalysis
+from specula.data_objects.ifunc import IFunc
+from specula.data_objects.ifunc_inv import IFuncInv
+from specula.data_objects.simul_params import SimulParams
+from test.specula_testlib import cpu_and_gpu
+from skimage.restoration import unwrap_phase
+
+import numpy as np
+from unittest.mock import patch
+
+@unittest.skipIf((os.environ.get('CI') == 'true' and
+                  sys.platform == 'linux' and
+                  sys.version_info[:2] >= (3, 11) and
+                  sys.version_info[:2] <= (3, 13)), "Disabled because of CI issues")
+class TestModalAnalysisUnwrapping(unittest.TestCase):
+
+    @cpu_and_gpu
+    def test_ls_vs_skimage_unwrapping(self, target_device_idx, xp):
+        simul_params = SimulParams(zenithAngleInDeg=0.0, pixel_pupil=120,
+                                   pixel_pitch=0.01, time_step=1)
+
+        # Atmosphere
+        seeing = WaveGenerator(constant=15.0, target_device_idx=target_device_idx)
+        wind_speed = WaveGenerator(constant=[0, 0, 0, 0], target_device_idx=target_device_idx)
+        wind_direction = WaveGenerator(constant=[0, 0, 0, 0], target_device_idx=target_device_idx)
+        atmo = AtmoInfiniteEvolution(simul_params,
+                                     L0=20,  # [m] Outer scale
+                                     heights=[0., 40., 120., 200.],
+                                     Cn2=[0.769, 0.104, 0.127, 0.0],
+                                     fov=8.0,
+                                     target_device_idx=target_device_idx)
+
+        # Physical and geometrical propagation to source
+        uplink_source = Source(polar_coordinates=[0.0, 0.0], magnitude=0, height=400, wavelengthInNm=1550)
+        prop_up = AtmoPropagation(simul_params, source_dict={'uplink_source': uplink_source},
+                                  target_device_idx=target_device_idx, wavelengthInNm=1550)
+
+        atmo.inputs['seeing'].set(seeing.output)
+        atmo.inputs['wind_direction'].set(wind_direction.output)
+        atmo.inputs['wind_speed'].set(wind_speed.output)
+        prop_up.inputs['atmo_layer_list'].set(atmo.outputs['layer_list'])
+        for objlist in [[seeing, wind_speed, wind_direction], [atmo], [prop_up]]:
+            for obj in objlist:
+                obj.setup()
+
+            for obj in objlist:
+                obj.check_ready(1)
+
+            for obj in objlist:
+                obj.trigger()
+
+            for obj in objlist:
+                obj.post_trigger()
+
+        # unwrapped phase from geometrical propagation
+        phase = prop_up.outputs['out_uplink_source_ef'].phi_at_lambda(1550)
+
+        # wrapped phase
+        ef = prop_up.outputs['out_uplink_source_ef'].ef_at_lambda(1550)
+        wrapped_phase = xp.angle(ef)
+
+        # unwrap phase again
+        modal_analysis = ModalAnalysis(npixels=120, nmodes=10, type_str='zernike', wavelengthInNm=1550, dorms=True)
+        unwrapped_phase = modal_analysis.unwrap_2d(wrapped_phase)
+        unwrapped_phase_skimage = unwrap_phase(cpuArray(wrapped_phase), rng=1)
+
+        rel_error_1 = np.mean(np.abs((cpuArray(phase) - cpuArray(unwrapped_phase))) / np.abs(cpuArray(phase)))
+        rel_error_2 = np.mean(np.abs((cpuArray(phase) - cpuArray(unwrapped_phase_skimage))) / np.abs(cpuArray(phase)))
+
+        np.testing.assert_array_less(rel_error_1, rel_error_2)
+
+
+    @cpu_and_gpu
+    def test_modal_analysis_unwrapping_physical_propagation(self, target_device_idx, xp):
+        simul_params = SimulParams(zenithAngleInDeg=0.0, pixel_pupil=120,
+                                   pixel_pitch=0.01, time_step=1)
+
+        # Atmosphere
+        seeing = WaveGenerator(constant=2.5, target_device_idx=target_device_idx)
+        wind_speed = WaveGenerator(constant=[0, 0, 0], target_device_idx=target_device_idx)
+        wind_direction = WaveGenerator(constant=[0, 0, 0], target_device_idx=target_device_idx)
+        atmo = AtmoInfiniteEvolution(simul_params,
+                                     L0=20,  # [m] Outer scale
+                                     heights=[0., 40., 120.],
+                                     Cn2=[0.769, 0.104, 0.127],
+                                     fov=8.0,
+                                     target_device_idx=target_device_idx)
+
+        # Physical and geometrical propagation to source
+        uplink_source = Source(polar_coordinates=[0.0, 0.0], magnitude=0, height=500,
+                               wavelengthInNm=1550)
+        prop_up_phys = AtmoPropagation(simul_params, source_dict={'uplink_source': uplink_source},
+                                  target_device_idx=target_device_idx, wavelengthInNm=1550, doFresnel=True,
+                                         upwards=True, padding_factor=3)
+        prop_up_geom = AtmoPropagation(simul_params, source_dict={'uplink_source': uplink_source},
+                                  target_device_idx=target_device_idx)
+
+        # Modal analysis
+        modal_analsis_phys = ModalAnalysis(npixels=120, nmodes=10,
+                                           type_str='zernike', wavelengthInNm=1550, dorms=True)
+        modal_analsis_geom = ModalAnalysis(npixels=120, nmodes=10, type_str='zernike', dorms=True)
+
+        atmo.inputs['seeing'].set(seeing.output)
+        atmo.inputs['wind_direction'].set(wind_direction.output)
+        atmo.inputs['wind_speed'].set(wind_speed.output)
+        prop_up_phys.inputs['atmo_layer_list'].set(atmo.outputs['layer_list'])
+        prop_up_geom.inputs['atmo_layer_list'].set(atmo.outputs['layer_list'])
+        modal_analsis_phys.inputs['in_ef'].set(prop_up_phys.outputs['out_uplink_source_ef'])
+        modal_analsis_geom.inputs['in_ef'].set(prop_up_geom.outputs['out_uplink_source_ef'])
+        for objlist in [[seeing, wind_speed, wind_direction], [atmo], \
+                        [prop_up_phys, prop_up_geom], [modal_analsis_phys, modal_analsis_geom]]:
+            for obj in objlist:
+                obj.setup()
+
+            for obj in objlist:
+                obj.check_ready(1)
+
+            for obj in objlist:
+                obj.trigger()
+
+            for obj in objlist:
+                obj.post_trigger()
+
+        modes_phys = cpuArray(modal_analsis_phys.outputs['out_modes'].value)
+        modes_geom = cpuArray(modal_analsis_geom.outputs['out_modes'].value)
+        # Use global relative L2 error to reduce sensitivity to backend-specific
+        # floating-point differences on single modal coefficients.
+        rel_error = np.linalg.norm(modes_phys - modes_geom) / np.linalg.norm(modes_geom)
+        np.testing.assert_array_less(rel_error, 0.16)
+
+    @cpu_and_gpu
+    def test_modal_analysis_ifunc_inv_nmodes_does_not_mutate_input(self, target_device_idx, xp):
+        ifunc_inv_data = xp.random.rand(4, 3).astype(xp.float32)
+        mask = xp.ones((2, 2), dtype=xp.uint8)
+        ifunc_inv = IFuncInv(ifunc_inv_data, mask,
+                             target_device_idx=target_device_idx)
+        original_shape = ifunc_inv.size
+
+        modal_analysis = ModalAnalysis(ifunc_inv=ifunc_inv, nmodes=2,
+                                       target_device_idx=target_device_idx)
+
+        self.assertEqual(ifunc_inv.size, original_shape)
+        self.assertEqual(modal_analysis.phase2modes.size, (4, 2))
+
+    @cpu_and_gpu
+    def test_modal_analysis_ifunc_inv_nmodes_none_shares_ifunc_inv_data(self, target_device_idx, xp):
+        ifunc_inv_data = xp.random.rand(4, 3).astype(xp.float32)
+        mask = xp.ones((2, 2), dtype=xp.uint8)
+        ifunc_inv = IFuncInv(ifunc_inv_data, mask,
+                             target_device_idx=target_device_idx)
+
+        modal_analysis = ModalAnalysis(ifunc_inv=ifunc_inv, nmodes=None,
+                                       target_device_idx=target_device_idx)
+
+        phase2modes_data = modal_analysis.phase2modes.ifunc_inv
+        if hasattr(xp, 'may_share_memory'):
+            self.assertTrue(xp.may_share_memory(phase2modes_data, ifunc_inv_data))
+        else:
+            self.assertEqual(phase2modes_data.data.ptr, ifunc_inv_data.data.ptr)
+
+    @cpu_and_gpu
+    def test_modal_analysis_forwards_remove_piston_default(self, target_device_idx, xp):
+        ifunc_data = xp.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=xp.float32)
+        mask = xp.array([[0, 1, 0], [0, 1, 0]], dtype=xp.uint8)
+        ifunc = IFunc(ifunc_data, mask=mask, target_device_idx=target_device_idx)
+        expected_inv = IFuncInv(xp.zeros((3, 2), dtype=xp.float32), mask=mask,
+                                target_device_idx=target_device_idx)
+
+        with patch.object(ifunc, 'inverse', return_value=expected_inv) as inverse_mock:
+            ModalAnalysis(ifunc=ifunc, target_device_idx=target_device_idx)
+
+        inverse_mock.assert_called_once_with(nmodes=None, remove_piston=True)

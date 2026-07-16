@@ -15,15 +15,10 @@ except ImportError:
     control = None
 
 class IirFilterData(BaseDataObj):
-    """:class:`~specula.data_objects.iir_filter_data.IirFilterData` - IIR Filter Data representation.
-    
-    This class stores IIR filter coefficients in the following format:
-    - Coefficients are stored with highest order terms first
-    - num[i, :] contains numerator coefficients for filter i
-    - den[i, :] contains denominator coefficients for filter i
-    - ordnum[i] and ordden[i] specify the actual order of each filter
-    
-    Transfer function: H(z) = (num[0] + num[1]*z^-1 + ...) / (den[0] + den[1]*z^-1 + ...)
+    """
+    Infinite Impulse Response (IIR) Filter Data object.
+    This class stores IIR filter coefficients and provides methods to analyze
+    the filter's transfer function, frequency response and stability.
     """
     def __init__(self,
                  ordnum: list,
@@ -33,6 +28,17 @@ class IirFilterData(BaseDataObj):
                  n_modes=None,
                  target_device_idx: int=None,
                  precision: int=None):
+        """
+        :class:`~specula.data_objects.iir_filter_data.IirFilterData` - IIR Filter Data representation.
+ 
+        This class stores IIR filter coefficients in the following format:
+        - Coefficients are stored with lowest order terms first
+        - num[i, :] contains numerator coefficients for filter i
+        - den[i, :] contains denominator coefficients for filter i
+        - ordnum[i] and ordden[i] specify the actual order of each filter
+
+        Transfer function: H(z) = (num[0] + num[1]*z + ...) / (den[0] + den[1]*z + ...)
+        """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
         # Handle filter setup (ordnum, ordden, num and den) based on n_modes:
         # - If n_modes is provided, it specifies how many modes (channels) to use.
@@ -58,8 +64,11 @@ class IirFilterData(BaseDataObj):
         self.zeros = None
         self.poles = None
         self.gain = None
-        self.set_num(self.to_xp(num, dtype=self.dtype))
-        self.set_den(self.to_xp(den, dtype=self.dtype))
+        self.num = None
+        self.den = None
+        self._num_normalized = None
+        self.set_num(cpuArray(num))
+        self.set_den(cpuArray(den))
 
     @property
     def nfilter(self):
@@ -67,102 +76,138 @@ class IirFilterData(BaseDataObj):
 
     def get_zeros(self):
         if self.zeros is None:
-            snum1 = self.num.shape[1]
-            zeros = self.xp.zeros((self.nfilter, snum1 - 1), dtype=self.dtype)
+            num_cpu = cpuArray(self.num)
+            ordnum_cpu = cpuArray(self.ordnum)
+            snum1 = num_cpu.shape[1]
+            zeros_cpu = np.zeros((self.nfilter, snum1 - 1))
             for i in range(self.nfilter):
-                if self.ordnum[i] > 1:
-                    roots = self.xp.roots(self.num[i, snum1 - int(self.ordnum[i]):])
+                oi = int(ordnum_cpu[i])
+                if oi > 1:
+                    roots = np.roots(num_cpu[i, snum1 - oi:])
                     if np.sum(np.abs(roots)) > 0:
-                        zeros[i, :int(self.ordnum[i]) - 1] = roots
-            self.zeros = zeros
+                        zeros_cpu[i, :oi - 1] = roots
+            self.zeros = self.to_xp(zeros_cpu, dtype=self.dtype)
         return self.zeros
 
     def get_poles(self):
         if self.poles is None:
-            sden1 = self.den.shape[1]
-            poles = self.xp.zeros((self.nfilter, sden1 - 1), dtype=self.dtype)
+            den_cpu = cpuArray(self.den)
+            ordden_cpu = cpuArray(self.ordden)
+            sden1 = den_cpu.shape[1]
+            poles_cpu = np.zeros((self.nfilter, sden1 - 1))
             for i in range(self.nfilter):
-                if self.ordden[i] > 1:
-                    poles[i, :int(self.ordden[i]) - 1] = self.xp.roots(self.den[i, sden1 - int(self.ordden[i]):])
-            self.poles = poles
+                oi = int(ordden_cpu[i])
+                if oi > 1:
+                    poles_cpu[i, :oi - 1] = np.roots(den_cpu[i, sden1 - oi:])
+            self.poles = self.to_xp(poles_cpu, dtype=self.dtype)
         return self.poles
 
     def set_num(self, num):
-        snum1 = num.shape[1]
-        mynum = num.copy()
+        mynum = cpuArray(num).copy()
+        ordnum_cpu = cpuArray(self.ordnum)
+        snum1 = mynum.shape[1]
         for i in range(len(mynum)):
-            if self.ordnum[i] < snum1:
-                if np.sum(self.xp.abs(mynum[i, int(self.ordnum[i]):])) == 0:
-                    mynum[i, :] = self.xp.roll(mynum[i, :], snum1 - int(self.ordnum[i]))
+            oi = int(ordnum_cpu[i])
+            if oi < snum1 and np.sum(np.abs(mynum[i, oi:])) == 0:
+                mynum[i, :] = np.roll(mynum[i, :], snum1 - oi)
 
-        gain = self.xp.zeros(len(mynum), dtype=self.dtype)
-        for i in range(len(gain)):
-            gain[i] = mynum[i, - 1]
-        self.gain = gain
-        self.zeros = None 
+        gain = mynum[:, -1]
+        nonzero_gain = np.abs(gain) > 0
+        safe_gain = np.where(nonzero_gain, gain, 1.0)
+        num_normalized = mynum / safe_gain[:, None]
+        self.gain = self.to_xp(gain, dtype=self.dtype)
+        self._num_normalized = self.to_xp(num_normalized, dtype=self.dtype)
+        self.zeros = None
         self.num = self.to_xp(mynum, dtype=self.dtype)
 
     def set_den(self, den):
-        sden1 = den.shape[1]
-        myden = den.copy()
+        myden = cpuArray(den).copy()
+        ordden_cpu = cpuArray(self.ordden)
+        sden1 = myden.shape[1]
         for i in range(len(myden)):
-            if self.ordden[i] < sden1:
-                if np.sum(self.xp.abs(myden[i, int(self.ordden[i]):])) == 0:
-                    myden[i, :] = self.xp.roll(myden[i, :], sden1 - int(self.ordden[i]))
+            oi = int(ordden_cpu[i])
+            if oi < sden1 and np.sum(np.abs(myden[i, oi:])) == 0:
+                myden[i, :] = np.roll(myden[i, :], sden1 - oi)
 
         self.den = self.to_xp(myden, dtype=self.dtype)
         self.poles = None
 
     def set_zeros(self, zeros):
-        self.zeros = self.to_xp(zeros, dtype=self.dtype)
-        num = self.xp.zeros((self.nfilter, self.zeros.shape[1] + 1), dtype=self.dtype)
-        snum1 = num.shape[1]
+        zeros_cpu = cpuArray(zeros)
+        ordnum_cpu = cpuArray(self.ordnum)
+        num_cpu = np.zeros((self.nfilter, zeros_cpu.shape[1] + 1))
+        snum1 = num_cpu.shape[1]
         for i in range(self.nfilter):
-            if self.ordnum[i] > 1:
-                num[i, snum1 - int(self.ordnum[i]):] = self.xp.poly(self.zeros[i, :int(self.ordnum[i]) - 1])
-        self.num = num
+            oi = int(ordnum_cpu[i])
+            if oi > 1:
+                num_cpu[i, snum1 - oi:] = np.poly(zeros_cpu[i, :oi - 1])
+        self.set_num(num_cpu)  # resets self.zeros = None internally
+        self.zeros = self.to_xp(zeros_cpu, dtype=self.dtype)
 
     def set_poles(self, poles):
-        self.poles = self.to_xp(poles, dtype=self.dtype)
-        den = self.xp.zeros((self.nfilter, self.poles.shape[1] + 1), dtype=self.dtype)
-        sden1 = den.shape[1]
+        poles_cpu = cpuArray(poles)
+        ordden_cpu = cpuArray(self.ordden)
+        den_cpu = np.zeros((self.nfilter, poles_cpu.shape[1] + 1))
+        sden1 = den_cpu.shape[1]
         for i in range(self.nfilter):
-            if self.ordden[i] > 1:
-                den[i, sden1 - int(self.ordden[i]):] = self.xp.poly(self.poles[i, :int(self.ordden[i]) - 1])
-        self.den = den
+            oi = int(ordden_cpu[i])
+            if oi > 1:
+                den_cpu[i, sden1 - oi:] = np.poly(poles_cpu[i, :oi - 1])
+        self.poles = self.to_xp(poles_cpu, dtype=self.dtype)
+        self.den = self.to_xp(den_cpu, dtype=self.dtype)
 
-    def set_gain(self, gain, verbose=False):
+    def set_gain(self, gain):
+        if np.ndim(gain) == 0:
+            gain = np.repeat(gain, self.nfilter)
         gain = self.to_xp(gain, dtype=self.dtype)
-        if verbose:
-            print('original gain:', self.gain)
+        self.logger.info(f'Setting gain: {gain}')
+
+        if self._num_normalized is None:
+            self._num_normalized = self.to_xp(self.num, dtype=self.dtype)
+            if self.gain is not None:
+                nonzero_gain = self.xp.abs(self.gain) > 0
+                safe_gain = self.xp.where(nonzero_gain, self.gain, 1)
+                self._num_normalized = self._num_normalized / safe_gain[:, None]
+
         if self.xp.size(gain) < self.nfilter:
             nfilter = np.size(gain)
         else:
             nfilter = self.nfilter
-        if self.gain is None:
-            for i in range(nfilter):
-                if self.xp.isfinite(gain[i]):
-                    if self.ordnum[i] > 1:
-                        self.num[i, :] *= gain[i]
-                    else:
-                        self.num[i, - 1] = gain[i]
-                else:
-                    gain[i] = self.num[i, - 1]
-        else:
-            for i in range(nfilter):
-                if self.xp.isfinite(gain[i]):
-                    if self.ordnum[i] > 1:
-                        self.num[i, :] *= (gain[i] / self.gain[i])
-                    else:
-                        self.num[i, - 1] = gain[i] / self.gain[i]
-                else:
-                    gain[i] = self.gain[i]
-        self.gain = self.to_xp(gain, dtype=self.dtype)
-        if verbose:
-            print('new gain:', self.gain)
 
-    def RTF(self, mode, fs, freq=None, tf=None, dm=None, nw=None, dw=None, verbose=False, title=None, plot=True, overplot=False, **extra):
-        """Plot Rejection Transfer Function: RTF = 1 / (1 - CP)"""
+        if self.gain is None:
+            current_gain = self.xp.zeros(self.nfilter, dtype=self.dtype)
+            current_gain[:nfilter] = gain[:nfilter]
+        else:
+            current_gain = self.to_xp(self.gain, dtype=self.dtype)
+
+        finite_gain = self.xp.isfinite(gain[:nfilter])
+        current_gain[:nfilter] = self.xp.where(finite_gain, gain[:nfilter], current_gain[:nfilter])
+
+        self.gain = self.to_xp(current_gain, dtype=self.dtype)
+        self.num = self.to_xp(self._num_normalized * self.gain[:, None], dtype=self.dtype)
+
+        self.logger.info(f'new gain: {self.gain}')
+
+    def RTF(self, mode, fs, freq=None, dm=None, nw=None, dw=None,
+            title=None, plot=True, overplot=False,
+            **extra):
+        """
+        Plot Rejection Transfer Function: RTF = 1 / (1 + CP)
+        
+        Args:
+            mode: Filter mode index to use for C coefficients
+            fs: Sampling frequency
+            freq: Frequency vector for evaluation (if None, auto-generated)
+            dm, nw, dw: Optional plant parameters to construct P
+                        The plant is represented as P = nw / (dm * dw)
+            title: Title for the plot
+            plot: If True, generate the plot
+            overplot: If True, plot on existing figure instead of creating new one
+            **extra: Additional plotting parameters (e.g., color)
+        
+        Returns:
+            rtf_mag: Magnitude of the Rejection Transfer Function at specified frequencies    
+        """
         plotTitle = title if title else 'Rejection Transfer Function'
 
         # Generate frequency vector if not provided
@@ -194,16 +239,15 @@ class IirFilterData(BaseDataObj):
 
         # Ensure same length by padding with zeros
         max_len = max(len(Cp_num), len(Cp_den))
-        Cp_num = np.pad(Cp_num, (max_len - len(Cp_num), 0), mode='constant')
-        Cp_den = np.pad(Cp_den, (max_len - len(Cp_den), 0), mode='constant')
+        Cp_num = np.pad(Cp_num, (0, max_len - len(Cp_num)), mode='constant')
+        Cp_den = np.pad(Cp_den, (0, max_len - len(Cp_den)), mode='constant')
 
         # Calculate RTF = 1 / (1 + CP) = Cp_den / (Cp_den + Cp_num)
         rtf_num = Cp_den
         rtf_den = Cp_den + Cp_num
 
-        if verbose:
-            print(f"RTF numerator: {rtf_num}")
-            print(f"RTF denominator: {rtf_den}")
+        self.logger.debug(f"RTF numerator: {rtf_num}")
+        self.logger.debug(f"RTF denominator: {rtf_den}")
 
         # Calculate frequency response
         rtf_complex = self.frequency_response(rtf_num, rtf_den, fs, freq=freq)
@@ -226,8 +270,26 @@ class IirFilterData(BaseDataObj):
 
         return rtf_mag
 
-    def NTF(self, mode, fs, freq=None, tf=None, dm=None, nw=None, dw=None, verbose=False, title=None, plot=True, overplot=False, **extra):
-        """Plot Noise Transfer Function: NTF = CP / (1 - CP)"""
+    def NTF(self, mode, fs, freq=None, dm=None, nw=None, dw=None,
+            title=None, plot=True, overplot=False,
+            **extra):
+        """
+        Plot Noise Transfer Function: NTF = CP / (1 + CP)
+        
+        Args:
+            mode: Filter mode index to use for C coefficients
+            fs: Sampling frequency
+            freq: Frequency vector for evaluation (if None, auto-generated)
+            dm, nw, dw: Optional plant parameters to construct P
+                        The plant is represented as P = nw / (dm * dw)
+            title: Title for the plot
+            plot: If True, generate the plot
+            overplot: If True, plot on existing figure instead of creating new one
+            **extra: Additional plotting parameters (e.g., color)
+            
+        Returns:
+            ntf_mag: Magnitude of the Noise Transfer Function at specified frequencies    
+        """
         plotTitle = title if title else 'Noise Transfer Function'
 
         # Generate frequency vector if not provided
@@ -259,16 +321,15 @@ class IirFilterData(BaseDataObj):
 
         # Ensure same length by padding with zeros
         max_len = max(len(Cp_num), len(Cp_den))
-        Cp_num = np.pad(Cp_num, (max_len - len(Cp_num), 0), mode='constant')
-        Cp_den = np.pad(Cp_den, (max_len - len(Cp_den), 0), mode='constant')
+        Cp_num = np.pad(Cp_num, (0, max_len - len(Cp_num)), mode='constant')
+        Cp_den = np.pad(Cp_den, (0, max_len - len(Cp_den)), mode='constant')
 
         # Calculate NTF = CP / (1 + CP) = Cp_num / (Cp_den + Cp_num)
         ntf_num = Cp_num
         ntf_den = Cp_den + Cp_num
 
-        if verbose:
-            print(f"NTF numerator: {ntf_num}")
-            print(f"NTF denominator: {ntf_den}")
+        self.logger.debug(f"NTF numerator: {ntf_num}")
+        self.logger.debug(f"NTF denominator: {ntf_den}")
 
         # Calculate frequency response
         ntf_complex = self.frequency_response(ntf_num, ntf_den, fs, freq=freq)
@@ -323,8 +384,8 @@ class IirFilterData(BaseDataObj):
         if freq is None:
             freq = np.logspace(-3, np.log10(fs/2), 1000)
 
-        x = freq.copy() / (fs/2) * np.pi
-        z = np.exp(1j * x)
+        x = freq / (fs/2) * self.dtype(np.pi)
+        z = np.exp(self.complex_dtype(1j) * x, dtype=self.complex_dtype)
 
         complex_tf = np.zeros(len(freq), dtype=complex)
         for i, zi in enumerate(z):
@@ -348,21 +409,20 @@ class IirFilterData(BaseDataObj):
 
         # Ensure same length by padding with zeros
         max_len = max(len(cp_num), len(cp_den))
-        cp_num = np.pad(cp_num, (max_len - len(cp_num), 0), mode='constant')
-        cp_den = np.pad(cp_den, (max_len - len(cp_den), 0), mode='constant')
+        cp_num = np.pad(cp_num, (0, max_len - len(cp_num)), mode='constant')
+        cp_den = np.pad(cp_den, (0, max_len - len(cp_den)), mode='constant')
 
         # Calculate closed-loop denominator: Cp_den + Cp_num (from RTF/NTF)
         closed_loop_den = cp_den + cp_num
 
         return closed_loop_den
 
-    def is_stable(self, mode, dm=None, nw=None, dw=None, verbose=False):
+    def is_stable(self, mode, dm=None, nw=None, dw=None):
         """Check stability by analyzing poles of the closed-loop system.
         
         Args:
             mode: Filter mode index
             dm, nw, dw: Plant coefficients (optional)
-            verbose: Print debug information
             
         Returns:
             bool: True if stable, False otherwise
@@ -382,8 +442,7 @@ class IirFilterData(BaseDataObj):
 
         closed_loop_den = self.closed_loop_denominator(c_num, c_den, p_num, p_den)
 
-        if verbose:
-            print(f"Closed-loop denominator: {closed_loop_den}")
+        self.logger.debug(f"Closed-loop denominator: {closed_loop_den}")
 
         # Find poles (roots of denominator)
         try:
@@ -393,27 +452,25 @@ class IirFilterData(BaseDataObj):
                 # Constant denominator - system might be unstable
                 return False
 
-            if verbose:
-                print(f"Poles: {poles}")
+            self.logger.debug(f"Poles: {poles}")
 
             # Check stability: for discrete-time systems, all poles must be inside unit circle: |pole| < 1
             stable = np.all(np.abs(poles) < 1.0)
             max_pole_mag = np.max(np.abs(poles)) if len(poles) > 0 else 0
 
-            if verbose:
-                print(f"Maximum pole magnitude: {max_pole_mag}")
-                print(f"Stable (discrete): {stable}")
+            self.logger.debug(f"Maximum pole magnitude: {max_pole_mag}")
+            self.logger.debug(f"Stable (discrete): {stable}")
 
             return stable
 
         except Exception as e:
-            if verbose:
-                print(f"Error computing poles: {e}")
+            self.logger.error(f"Error computing poles: {e}")
             return False
 
     @lru_cache(maxsize=16384)
-    def _compute_max_stable_gain_internal(self, num_tuple, den_tuple, delay=None, dm_tuple=None, nw_tuple=None, dw_tuple=None,
-                                        max_gain=20.0, n_gain=10000, tolerance=1e-6):
+    def _compute_max_stable_gain_internal(self, num_tuple, den_tuple, delay=None,
+                                          dm_tuple=None, nw_tuple=None, dw_tuple=None,
+                                          max_gain=20.0, n_gain=10000, tolerance=1e-6):
         """Internal computation of maximum stable gain."""
 
         num_coeffs = np.array(num_tuple)
@@ -466,7 +523,7 @@ class IirFilterData(BaseDataObj):
         return max_stable
 
     def max_stable_gain(self, mode=None, delay=None, dm=None, nw=None, dw=None, 
-                    max_gain=20.0, n_gain=10000, tolerance=1e-6):
+                              max_gain=20.0, n_gain=10000, tolerance=1e-6):
         """Calculate maximum stable gain for closed-loop system.
         
         This function finds the maximum controller gain that maintains stability
@@ -529,14 +586,15 @@ class IirFilterData(BaseDataObj):
                 dw_tuple = tuple(cpuArray(dw)) if dw is not None else None
 
                 max_gains[i] = self._compute_max_stable_gain_internal(
-                    num_tuple, den_tuple, delay=delay, dm_tuple=dm_tuple, nw_tuple=nw_tuple, dw_tuple=dw_tuple,
+                    num_tuple, den_tuple, delay=delay, dm_tuple=dm_tuple,
+                    nw_tuple=nw_tuple, dw_tuple=dw_tuple,
                     max_gain=max_gain, n_gain=n_gain, tolerance=tolerance
                 )
 
             return max_gains
 
-    def resonance_frequency(self, mode, gain_factor=1.0, delay=None, dm=None, nw=None, dw=None, 
-                           fs=1000.0, freq=None):
+    def resonance_frequency(self, mode, gain_factor=1.0, delay=None, dm=None, nw=None, dw=None,
+                                  fs=1000.0, freq=None):
         """Calculate resonance frequency of closed-loop system.
         
         Args:
@@ -582,17 +640,17 @@ class IirFilterData(BaseDataObj):
 
         # Ensure same length by padding with zeros
         max_len = max(len(Cp_num), len(Cp_den))
-        Cp_num = np.pad(Cp_num, (max_len - len(Cp_num), 0), mode='constant')
-        Cp_den = np.pad(Cp_den, (max_len - len(Cp_den), 0), mode='constant')
+        Cp_num = np.pad(Cp_num, (0, max_len - len(Cp_num)), mode='constant')
+        Cp_den = np.pad(Cp_den, (0, max_len - len(Cp_den)), mode='constant')
 
         # Calculate closed-loop transfer function denominator
         closed_loop_den = Cp_den + Cp_num
 
         # Calculate frequency response of denominator
-        x = freq.copy() / (fs/2) * np.pi
-        z = np.exp(1j * x)
+        x = freq / (fs/2) * self.dtype(np.pi)
+        z = np.exp(self.complex_dtype(1j) * x, dtype=self.complex_dtype)
 
-        denominator_response = np.zeros(len(freq), dtype=complex)
+        denominator_response = np.zeros(len(freq), dtype=self.complex_dtype)
         for i, zi in enumerate(z):
             denominator_response[i] = np.polyval(closed_loop_den[::-1], zi)
 
@@ -605,8 +663,8 @@ class IirFilterData(BaseDataObj):
 
         return resonance_freq, resonance_amplitude
 
-    def stability_analysis(self, mode=None, delay=None, dm=None, nw=None, dw=None, 
-                          fs=1000.0, max_gain=20.0, n_gain=10000):
+    def stability_analysis(self, mode=None, delay=None, dm=None, nw=None, dw=None,
+                                 fs=1000.0, max_gain=20.0, n_gain=10000):
         """Comprehensive stability analysis for controller(s).
         
         Args:
@@ -693,10 +751,10 @@ class IirFilterData(BaseDataObj):
             version = hdr['VERSION']
             if version != 1:
                 raise ValueError(f"Error: unknown version {version} in file {filename}")
-            ordnum = hdul[1].data
-            ordden = hdul[2].data
-            num = hdul[3].data
-            den = hdul[4].data
+            ordnum = hdul[1].data.copy()
+            ordden = hdul[2].data.copy()
+            num = hdul[3].data.copy()
+            den = hdul[4].data.copy()
             return IirFilterData(ordnum, ordden, num, den, target_device_idx=target_device_idx)
 
     def get_fits_header(self):
@@ -746,7 +804,6 @@ class IirFilterData(BaseDataObj):
 
         return num, den
 
-
     @staticmethod
     def from_gain_and_ff(gain, ff=None, target_device_idx=None):
         '''Build an IirFilterData object from a gain value/vector
@@ -769,6 +826,10 @@ class IirFilterData(BaseDataObj):
         ord_den = np.zeros(n)
 
         for i in range(n):
+            # For a first-order IIR filter with gain and forgetting factor ff:
+            # H(z) = gain / (1 - ff * z^(-1))
+            # or
+            # H(z) = gain * z / (z - ff)
             num[i, 0] = 0
             num[i, 1] = gain[i]
             ord_num[i] = 2
@@ -929,10 +990,10 @@ class IirFilterData(BaseDataObj):
         Args:
             mode: Index of the filter to convert (default: 0)
             dt: Sampling time for discrete-time system (default: None for continuous-time)
-            
+
         Returns:
             control.TransferFunction: The transfer function object
-            
+
         Raises:
             ImportError: If control library is not installed
         """
@@ -945,7 +1006,7 @@ class IirFilterData(BaseDataObj):
         num_coeffs = cpuArray(self.num[mode, ::-1])
         den_coeffs = cpuArray(self.den[mode, ::-1])
 
-        # Remove final zeros (highest order first)
+        # Remove final zeros (highest order first because of reversed order)
         while len(num_coeffs) > 1 and num_coeffs[-1] == 0 and len(den_coeffs) > 1 and den_coeffs[-1] == 0:
             num_coeffs = num_coeffs[:-1]
             den_coeffs = den_coeffs[:-1]
@@ -960,13 +1021,13 @@ class IirFilterData(BaseDataObj):
 
     def to_control_tf_list(self, dt: float = None):
         """Convert all filters to a list of control.TransferFunction objects.
-        
+
         Args:
             dt: Sampling time for discrete-time system (default: None for continuous-time)
-            
+
         Returns:
             list: List of control.TransferFunction objects
-            
+
         Raises:
             ImportError: If control library is not installed
         """
@@ -980,11 +1041,11 @@ class IirFilterData(BaseDataObj):
     @staticmethod
     def from_control_tf(tf_list, target_device_idx: int = None):
         """Create IirFilterData from control.TransferFunction objects.
-        
+
         Args:
             tf_list: Single control.TransferFunction or list of control.TransferFunction objects
             target_device_idx: Target device index (default: None)
-            
+
         Returns:
             IirFilterData: New IirFilterData object
         """
@@ -1031,17 +1092,18 @@ class IirFilterData(BaseDataObj):
     def bode_plot(self, mode: int = 0, dt: float = None, omega: np.ndarray = None,
                   plot: bool = True, **kwargs):
         """Create Bode plot for a specific filter using control library.
-        
+
         Args:
             mode: Index of the filter to plot (default: 0)
             dt: Sampling time for discrete-time system (default: None)
             omega: Frequency vector (default: auto-generated)
             plot: Whether to display the plot (default: True)
             **kwargs: Additional arguments passed to control.bode_plot
-            
+
         Returns:
             tuple: (magnitude, phase, frequency) arrays
-            
+            or ControlPlot object
+
         Raises:
             ImportError: If control library is not installed
         """
@@ -1058,23 +1120,28 @@ class IirFilterData(BaseDataObj):
                 # Continuous-time system
                 omega = np.logspace(-2, 4, 1000)
 
-        mag, phase, freq = control.bode_plot(tf, omega=omega, plot=plot, **kwargs)
-        return mag, phase, freq
+        out = control.bode_plot(tf, omega=omega, plot=plot, **kwargs)
+
+        if hasattr(out, 'mag'):
+            return out.mag, out.phase, omega
+        else:
+            return out
 
     def nyquist_plot(self, mode: int = 0, dt: float = None, omega: np.ndarray = None,
                      plot: bool = True, **kwargs):
         """Create Nyquist plot for a specific filter using control library.
-        
+
         Args:
             mode: Index of the filter to plot (default: 0)
             dt: Sampling time for discrete-time system (default: None)
             omega: Frequency vector (default: auto-generated)
             plot: Whether to display the plot (default: True)
             **kwargs: Additional arguments passed to control.nyquist_plot
-            
+
         Returns:
             tuple: (real, imaginary, frequency) arrays
-            
+            or ControlPlot object
+
         Raises:
             ImportError: If control library is not installed
         """
@@ -1091,21 +1158,28 @@ class IirFilterData(BaseDataObj):
                 # Continuous-time system
                 omega = np.logspace(-2, 4, 1000)
 
-        real, imag, freq = control.nyquist_plot(tf, omega=omega, plot=plot, **kwargs)
-        return real, imag, freq
+        # Makes plot and get response data
+        out = control.nyquist_plot(tf, omega=omega, plot=plot, **kwargs)
+
+        if hasattr(out, 'response'):
+            return out.response.real, out.response.imag, omega
+        elif hasattr(out, 'real'):
+            return out.real, out.imag, omega
+        else:
+            return out
 
     def step_response(self, mode: int = 0, dt: float = None, T: np.ndarray = None, **kwargs):
         """Compute step response for a specific filter using control library.
-        
+
         Args:
             mode: Index of the filter (default: 0)
             dt: Sampling time for discrete-time system (default: None)
             T: Time vector (default: auto-generated)
             **kwargs: Additional arguments passed to control.step_response
-            
+
         Returns:
             tuple: (time, response) arrays
-            
+
         Raises:
             ImportError: If control library is not installed
         """
@@ -1126,16 +1200,16 @@ class IirFilterData(BaseDataObj):
 
     def impulse_response(self, mode: int = 0, dt: float = None, T: np.ndarray = None, **kwargs):
         """Compute impulse response for a specific filter using control library.
-        
+
         Args:
             mode: Index of the filter (default: 0)
             dt: Sampling time for discrete-time system (default: None)
             T: Time vector (default: auto-generated)
             **kwargs: Additional arguments passed to control.impulse_response
-            
+
         Returns:
             tuple: (time, response) arrays
-            
+
         Raises:
             ImportError: If control library is not installed
         """
@@ -1156,18 +1230,18 @@ class IirFilterData(BaseDataObj):
 
     def stability_margins(self, mode: int = 0, dt: float = None):
         """Compute stability margins for a specific filter using control library.
-        
+
         Args:
             mode: Index of the filter (default: 0)
             dt: Sampling time for discrete-time system (default: None)
-            
+
         Returns:
             tuple: (gain_margin, phase_margin, wg, wp) where:
                    - gain_margin: Gain margin in dB
                    - phase_margin: Phase margin in degrees
                    - wg: Frequency at gain margin
                    - wp: Frequency at phase margin
-            
+
         Raises:
             ImportError: If control library is not installed
         """
@@ -1175,20 +1249,22 @@ class IirFilterData(BaseDataObj):
 
         tf = self.to_control_tf(mode=mode, dt=dt)
         gm, pm, wg, wp = control.margin(tf)
-        return gm, pm, wg, wp
+
+        gm_db = 20 * np.log10(gm) if (gm is not None and gm > 0) else np.inf
+        return gm_db, pm, wg, wp
 
     def pole_zero_map(self, mode: int = 0, dt: float = None, plot: bool = True, **kwargs):
         """Create pole-zero map for a specific filter using control library.
-        
+
         Args:
             mode: Index of the filter (default: 0)
             dt: Sampling time for discrete-time system (default: None)
             plot: Whether to display the plot (default: True)
             **kwargs: Additional arguments passed to control.pzmap
-            
+
         Returns:
             tuple: (poles, zeros) arrays
-            
+
         Raises:
             ImportError: If control library is not installed
         """

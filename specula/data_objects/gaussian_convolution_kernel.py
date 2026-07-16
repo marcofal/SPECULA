@@ -2,11 +2,13 @@ from specula.data_objects.convolution_kernel import ConvolutionKernel, lgs_map_s
 
 from astropy.io import fits
 
+
 class GaussianConvolutionKernel(ConvolutionKernel):
     """
-    Kernel processing object for Gaussian kernels.
+    Gaussian Convolution Kernel data object.
+    This object stores a Gaussian convolution kernel for Shack-Hartmann
+    wavefront sensing and performs the related computations.
     """
-
     def __init__(self,
                  dimx: int,
                  dimy: int,
@@ -53,7 +55,7 @@ class GaussianConvolutionKernel(ConvolutionKernel):
     def calculate_lgs_map(self):
         self.real_kernels = lgs_map_sh(
             self.dimx, self.pupil_size_m, 0, 90e3, [0], profz=[1.0], fwhmb=self.spot_size, ps=self.pxscale,
-            ssp=self.dimension, overs=1, theta=self.lgs_tt, xp=self.xp )
+            ssp=self.dimension, overs=1, theta=self.lgs_tt, xp=self.xp)
 
         self.process_kernels(return_fft=self.return_fft)
 
@@ -101,8 +103,6 @@ class GaussianConvolutionKernel(ConvolutionKernel):
             kernel_obj.oversampling = hdr['OVERSAMP']
             kernel_obj.positive_shift_tt = hdr['POSTT']
 
-        # This code uses an intermediate array to make sure that endianess is correct (FITS is big-endian)
-        data = kernel_obj.xp.array(fits.getdata(filename, ext=1), dtype=kernel_obj.dtype)
-        kernel_obj.real_kernels[:] = data
+        kernel_obj.real_kernels[:] = kernel_obj.to_xp(fits.getdata(filename, ext=1))
         kernel_obj.process_kernels(return_fft=return_fft)
         return kernel_obj

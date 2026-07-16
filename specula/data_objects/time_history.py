@@ -6,8 +6,11 @@ from specula.base_data_obj import BaseDataObj
 
 
 class TimeHistory(BaseDataObj):
-    '''Time history'''
-
+    """
+    Time history data object.
+    This class holds the time history of a variable, such as the seeing value, during the simulation.
+    The time history is stored as a 1D array,
+    """
     def __init__(self,
                  time_history,
                  target_device_idx: int=None,
@@ -37,7 +40,7 @@ class TimeHistory(BaseDataObj):
         version = hdr.get('VERSION')
         if version != 1:
             raise ValueError(f"Unknown version {version} in file {filename}")
-        data = fits.getdata(filename)
+        data = fits.getdata(filename).copy()
         return TimeHistory(data, target_device_idx=target_device_idx)
 
     def array_for_display(self):

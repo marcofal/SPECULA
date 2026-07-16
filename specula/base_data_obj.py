@@ -13,12 +13,12 @@ def get_properties(cls):
     result = []
     classlist = cls.__mro__
     for cc in classlist:
-        result.extend([attr for attr, value in vars(cc).items() if isinstance(value, property) ]) 
+        result.extend([attr for attr, value in vars(cc).items() if isinstance(value, property) ])
     return result
 
 
 class BaseDataObj(BaseTimeObj):
-    def __init__(self, target_device_idx=None, precision=None):
+    def __init__(self, target_device_idx: int=None, precision: int=None):
         """
         Initialize the base data object.
 
@@ -44,7 +44,7 @@ class BaseDataObj(BaseTimeObj):
         '''
         # Get a list of all attributes, but skip properties
         pp = get_properties(type(self))
-        attr_list = [attr for attr in dir(self) if attr not in pp]       
+        attr_list = [attr for attr in dir(self) if attr not in pp]
 
         for attr in attr_list:
             self_attr = getattr(self, attr)
@@ -56,7 +56,7 @@ class BaseDataObj(BaseTimeObj):
             dest_type = type(dest_attr)
 
             if dest_type not in array_types:
-                print(f'Warning: destination attribute is not a cupy/numpy array, forcing reallocation ({destobj}.{attr})')
+                self.logger.warning(f'destination attribute is not a cupy/numpy array, forcing reallocation ({destobj}.{attr})')
                 force_reallocation = True
 
             # Destination array had the correct type: perform in-place data copy
@@ -87,7 +87,7 @@ class BaseDataObj(BaseTimeObj):
                 elif HtH:
                     dest_attr[:] = self_attr
                 else:
-                    print(f'Warning: mismatch between target_device_idx and array allocation, forcing reallocation ({destobj}.{attr})')
+                    self.logger.warning(f'mismatch between target_device_idx and array allocation, forcing reallocation ({destobj}.{attr})')
                     force_reallocation = True
 
             # Otherwise, reallocate

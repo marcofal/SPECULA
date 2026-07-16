@@ -6,29 +6,81 @@ from specula.data_objects.m2c import M2C
 from specula.data_objects.ifunc import IFunc
 from specula.data_objects.layer import Layer
 from specula.data_objects.pupilstop import Pupilstop
-from specula.base_processing_obj import BaseProcessingObj
+from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.data_objects.simul_params import SimulParams
 
 class DM(BaseProcessingObj):
+    """
+    Deformable Mirror processing object.
+    It receives a command vector as input and produces a Layer object representing the DM wavefront.
+    """
     def __init__(self,
                  simul_params: SimulParams,
-                 height: float,          # TODO =0.0,
+                 height: float,
                  ifunc: IFunc=None,
                  m2c: M2C=None,
                  type_str: str=None,
                  nmodes: int=None,
                  nzern: int=None,
                  start_mode: int=None,
-                 input_offset: int=0,
                  idx_modes = None,
                  npixels: int=None,
                  obsratio: float=None,
                  diaratio: float=None,
                  pupilstop: Pupilstop=None,
                  sign: int=-1,
+                 stroke=None,
                  target_device_idx: int=None,
                  precision: int=None
                  ):
+        """
+        Note
+        ----
+        - The output layer object contains a wavefront not a surface. Wavefront = 2 x surface (reflection).
+        - The DM wavefront deformation is represented as a phase screen in nanometers.
+        - Sign parameter is -1 by default to account for reflection in wave propagation.
+
+        Parameters
+        ----------
+        simul_params : SimulParams
+            Simulation parameters object containing pupil size, pixel pitch, etc.
+        height : float [m]
+            Height of the DM layer in meters (this is distance from the pupil).
+        ifunc : IFunc
+            Influence function object defining the DM actuator influence functions.
+        m2c : M2C
+            Mode-to-command matrix object for converting mode commands to actuator commands.
+        type_str : str
+            Type of influence function to use if `ifunc` is not provided.
+        nmodes : int [1], optional
+            Number of modes to consider if `ifunc` is not provided.
+        nzern : int [1], optional
+            Maximum Zernike radial order if `ifunc` is not provided.
+            This is used from mixed Zernike KL bases (not implemented yet).
+        start_mode : int [1], optional
+            Starting mode index for the DM modes.
+        idx_modes : list or array [1], optional
+            Specific mode indices to use for the DM. If provided, `start_mode` and `nmodes` are ignored.
+        npixels : int [pixels], optional
+            Number of pixels for the DM layer. If None, defaults to pupil size.
+        obsratio : float [1], optional
+            Obscuration ratio for the influence function if `ifunc` is not provided.
+        diaratio : float [1], optional
+            Diagonal ratio for the influence function if `ifunc` is not provided.
+        pupilstop : Pupilstop
+            Pupilstop object defining the DM aperture.
+        sign : int [1], optional
+            Sign for the DM surface deformation, by default -1.
+        stroke : float or list [nm], optional 
+            The maximum amplitude (in NANOMETERS) to which commands are clipped at. 
+            If a list is given, this is the maximum amplitude that can be applied per mode.
+            Default is None (no clipping applied).
+        target_device_idx : int [1], optional
+            Target device index for computation (CPU/GPU). Default is None (uses global setting).
+        precision : int [1], optional
+            Precision for computation (0 for double, 1 for single). Default is None
+            (uses global setting).
+        """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
         self.simul_params = simul_params
@@ -70,7 +122,7 @@ class DM(BaseProcessingObj):
         if start_mode is None:
             start_mode = 0
         if nmodes is None:
-            nmodes = self._ifunc.size[0]
+            nmodes = self._ifunc.nmodes()
 
         if idx_modes is not None:
             self._valid_modes = idx_modes
@@ -83,12 +135,14 @@ class DM(BaseProcessingObj):
             self.m2c = m2c.m2c
             nmodes_m2c = m2c.m2c[:, self._valid_modes].shape[1]
             self.m2c_commands = self.xp.zeros(nmodes_m2c, dtype=self.dtype)
+            out_comm_len = self.m2c.shape[0]
         else:
             self.m2c = None
             self.m2c_commands = None
+            out_comm_len = self.n_valid_modes
         
         s = self._ifunc.mask_inf_func.shape
-        nmodes_if = self._ifunc.size[0]
+        nmodes_if = self._ifunc.nmodes()
         self.if_commands = self.xp.zeros(nmodes_if, dtype=self.dtype)
 
         self.if_commands_selector = slice(0, self.n_valid_modes)
@@ -96,25 +150,52 @@ class DM(BaseProcessingObj):
         self.layer = Layer(s[0], s[1], self.pixel_pitch, height, target_device_idx=target_device_idx, precision=precision)
         self.layer.A = self._ifunc.mask_inf_func
 
-        self.input_offset = input_offset
         self.nmodes = nmodes - start_mode   # Input command vector is not supposed to include the modes before "start_mode"
 
         # Default sign is -1 to take into account the reflection in the propagation
         self.sign = sign
+
+        self.stroke = None
+        if stroke is not None:
+            if isinstance(stroke,list):
+                if out_comm_len != len(stroke):
+                    raise ValueError(f'Stroke is a list of {len(stroke)} elements, but {out_comm_len} coefficients are expected')
+                self.stroke = self.xp.array(stroke)
+            else:
+                self.stroke = self.xp.ones(out_comm_len)*stroke
+        
+        self.clip_command = BaseValue(
+            target_device_idx=target_device_idx,
+            precision=precision,
+            value=self.xp.zeros(out_comm_len, dtype=self.dtype)
+        )
+        self.outputs['out_clipped_command'] = self.clip_command
         self.inputs['in_command'] = InputValue(type=BaseValue)
         self.outputs['out_layer'] = self.layer
+
+    @classmethod
+    def input_names(cls):
+        return {'in_command': InputDesc(BaseValue, 'Input command vector for DM actuators')}
+
+    @classmethod
+    def output_names(cls):
+        return {'out_layer': OutputDesc(Layer, 'Output wavefront layer produced by the DM'),
+                'out_clipped_command': OutputDesc(BaseValue, 'DM applied command, after (optional) clipping')}
 
     def trigger_code(self):
         input_commands = self.local_inputs['in_command'].value
 
         if self.nmodes is not None:
-            input_commands = input_commands[self.input_offset: self.input_offset + self.nmodes]
+            input_commands = input_commands[:self.nmodes]
 
         if self.m2c is not None:
             self.m2c_commands[:len(input_commands)] = input_commands
             cmd = self.m2c[:, self._valid_modes] @ self.m2c_commands
         else:
             cmd = input_commands
+        # Perform clipping
+        if self.stroke is not None: 
+            cmd = self.xp.minimum(self.xp.maximum(-self.stroke[:len(cmd)],cmd),self.stroke[:len(cmd)])
         self.if_commands[:len(cmd)] = self.sign * cmd
 
         if self.m2c is not None:
@@ -123,11 +204,18 @@ class DM(BaseProcessingObj):
             self.layer.phaseInNm[self._ifunc.idx_inf_func] = \
                 self.if_commands[self.if_commands_selector] @ self._ifunc.influence_function[self._valid_modes, :]
         self.layer.generation_time = self.current_time
+        self.clip_command.value[:len(cmd)] = cmd
+        self.clip_command.generation_time = self.current_time
 
     # Getters and Setters for the attributes
     @property
     def ifunc(self):
         return self._ifunc.influence_function
+
+    @property
+    def ifunc_obj(self):
+        """Return the IFunc object (not just the array)"""
+        return self._ifunc
 
     @ifunc.setter
     def ifunc(self, value):

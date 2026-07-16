@@ -62,7 +62,6 @@ Create a configuration file, for example ``params_control_lpf.yml``:
 
    control:
      class:             'Integrator'
-     simul_params_ref:  'main'
      delay:             1
      int_gain:          [0.3]
      inputs:
@@ -79,6 +78,10 @@ Create a configuration file, for example ``params_control_lpf.yml``:
 
    all_disp:
      class:            'PlotDisplay'
+     labels:           ['Input (step)',
+                        'Error (diff)',
+                        'Integrator command',
+                        'Low-pass output']
      inputs:
        value_list: ['disturbance.output',
                     'diff.out_value',

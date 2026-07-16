@@ -1,4 +1,4 @@
-from specula.base_processing_obj import BaseProcessingObj
+from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.base_value import BaseValue
 from specula.connections import InputList
 from specula.data_objects.simul_params import SimulParams
@@ -6,6 +6,10 @@ from specula.processing_objects.dm import DM
 from specula.lib.platescale_coeff import platescale_coeff
 
 class LinearCombination(BaseProcessingObj):
+    """
+    Linear combination processing objects.
+    Combination of multiple input vectors, specialized for MORFEO-like systems
+    """
     def __init__(self,
                  simul_params: SimulParams,
                  no_focus: bool = False,
@@ -27,7 +31,7 @@ class LinearCombination(BaseProcessingObj):
         self.plate_scale_idx = plate_scale_idx
 
         self.inputs['in_vectors_list'] = InputList(type=BaseValue)
-        self.out_vector = BaseValue(target_device_idx=self.target_device_idx)
+        self.out_vector = BaseValue(target_device_idx=self.target_device_idx, precision=precision)
         self.outputs['out_vector'] = self.out_vector
 
         if dm1 is not None and dm3 is not None:
@@ -35,6 +39,14 @@ class LinearCombination(BaseProcessingObj):
             self.ps_coeff = self.xp.array(platescale_coeff([dm1,dm3], start_modes, self.pixel_pupil)[0])
         else:
             self.ps_coeff = self.xp.zeros(3)
+
+    @classmethod
+    def input_names(cls):
+        return {'in_vectors_list': InputDesc(BaseValue, 'List of input command vectors to linearly combine')}
+
+    @classmethod
+    def output_names(cls):
+        return {'out_vector': OutputDesc(BaseValue, 'Output combined command vector')}
 
     def trigger_code(self):
         in_vectors = self.local_inputs['in_vectors_list']

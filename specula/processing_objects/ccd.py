@@ -1,7 +1,7 @@
 import warnings
 
 from specula import fuse
-from specula.base_processing_obj import BaseProcessingObj
+from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.connections import InputValue
 from specula.data_objects.pixels import Pixels
 from specula.data_objects.intensity import Intensity
@@ -16,12 +16,16 @@ def clamp_generic(x, c, y, xp):
 
 
 class CCD(BaseProcessingObj):
-    '''Simple CCD from intensity field'''
+    """
+    Detector processing object simulating a CCD camera from intensity field.
+    It integrates the input intensity over a given time (dt) and
+    applies various noise sources to simulate a realistic CCD image.
+    """
     def __init__(self,
                  simul_params: SimulParams,
-                 size: int,           # TODO list=[80,80],
-                 dt: float,           # TODO =0.001,
-                 bandw: float,        # TODO =300.0,
+                 size: list,
+                 dt: float,
+                 bandw: float,
                  binning: int=1,
                  photon_noise: bool=False,
                  readout_noise: bool=False,
@@ -47,16 +51,84 @@ class CCD(BaseProcessingObj):
                  emccd_gain: int=None,
                  target_device_idx: int=None,
                  precision: int=None):
+        """
+        Parameters
+        ----------
+        simul_params : SimulParams
+            Simulation parameters object reference.
+        size : int list [pixels]
+            Size of the CCD in pixels [nx, ny].
+        dt : float [s]
+            Integration time in seconds.
+        bandw : float [1]
+            Optical bandwidth in nm.
+        binning : int [1], optional
+            Pixel binning factor (default is 1, no binning).
+        photon_noise : bool
+            Whether to apply photon noise (Poisson noise) (default is False).
+        readout_noise : bool
+            Whether to apply readout noise (default is False).
+        excess_noise : bool
+            Whether to apply excess noise (default is False).
+        darkcurrent_noise : bool
+            Whether to apply dark current noise (default is False).
+        background_noise : bool
+            Whether to apply background noise (default is False).
+        cic_noise : bool
+            Whether to apply clock-induced charge noise (default is False).
+        cte_noise : bool
+            Whether to apply charge transfer efficiency noise (default is False).
+        readout_level : float [e-/pixel], optional
+            Readout noise level in electrons (default is 0.0).
+        darkcurrent_level : float [1], optional
+            Dark current level in electrons per pixel (default is 0.0).
+        background_level : float [1], optional
+            Background light level in electrons per pixel (default is 0.0).
+        cic_level : float [1], optional
+            Clock-induced charge level in electrons per pixel (default is 0).
+        cte_mat : array [1], optional
+            Charge transfer efficiency matrix (default is None).
+        quantum_eff : float [1], optional
+            Quantum efficiency (default is 1.0).
+            This is typically use to account for overall throughput.
+        pixelGains : array [1], optional
+            Pixel gain variations (default is None).
+        photon_seed : int [1], optional
+            Random seed for photon noise (default is 1).
+        readout_seed : int [1], optional
+            Random seed for readout noise (default is 2).
+        excess_seed : int [1], optional
+            Random seed for excess noise (default is 3).
+        excess_delta : float [1], optional
+            Excess noise factor (default is 1.0).
+            The excess noise factor is ENF = sqrt(2 - 1/excess_delta)
+        start_time : int [s], optional
+            Time to start the CCD integration (default is 0).
+        ADU_gain : float [1], optional
+            Analog-to-digital unit gain (default is None, which sets a default value based
+            on excess noise).
+        ADU_bias : int [1], optional
+            Analog-to-digital unit bias level (default is 400).
+        emccd_gain : int [1], optional
+            Electron-multiplying CCD gain (default is None, which sets a default value based
+            on excess noise).
+        target_device_idx : int [1], optional
+            Target device index for computation (CPU/GPU). Default is None (uses global setting).
+        precision : int [1], optional
+            Precision for computation (0 for double, 1 for single). Default is None
+            (uses global setting).
+        """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
         if dt <= 0:
             raise ValueError(f'dt (integration time) is {dt} and must be greater than zero')
-        if dt % simul_params.time_step != 0:
-            raise ValueError(f'integration time dt={dt} must be a multiple of the basic simulation time_step={simul_params.time_step}')
 
         self.dt = self.seconds_to_t(dt)
         self.loop_dt = self.seconds_to_t(simul_params.time_step)
         self.start_time = self.seconds_to_t(start_time)
+
+        if self.dt % self.loop_dt != 0:
+            raise ValueError(f'integration time dt={dt} must be a multiple of the basic simulation time_step={simul_params.time_step}')
 
         # TODO: move this code inside the wfs
         # if wfs and background_level:
@@ -163,8 +235,17 @@ class CCD(BaseProcessingObj):
         self._normNotUniformQe = False
         self._gaussian_noise = None
 
+    @classmethod
+    def input_names(cls):
+        return {'in_i': InputDesc(Intensity, 'Input intensity field from wavefront sensor')}
+
+    @classmethod
+    def output_names(cls):
+        return {'out_pixels': OutputDesc(Pixels, 'Output pixel data after noise and binning'),
+                'integrated_i': OutputDesc(Intensity, 'Integrated intensity over the exposure')}
+
     def trigger_code(self):
-        if self.start_time > 0 and self.current_time < self.start_time:
+        if self.current_time < self.start_time:
             return
 
         self._integrated_i.sum(self.local_inputs['in_i'],
@@ -215,9 +296,9 @@ class CCD(BaseProcessingObj):
             if not self._keep_ADU_bias:
                 pixels -= self._ADU_bias
 
-            pixels[:] = (pixels / self._ADU_gain)
+            pixels /= self._ADU_gain
             if self._excess_noise:
-                pixels[:] = (pixels / self._emccd_gain)
+                pixels /= self._emccd_gain
             if self._darkcurrent_noise and not self._do_not_remove_dark:
                 pixels -= self._darkcurrent_level
 

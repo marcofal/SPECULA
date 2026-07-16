@@ -1,4 +1,3 @@
-import os
 import pkgutil
 from pathlib import Path
 
@@ -26,7 +25,7 @@ def scan_base_classes(specula_path):
 
     return sorted(base_files)
 
-def generate_simple_api_doc(category_name, modules, description=""):
+def generate_simple_api_doc(category_name, modules, description="", include_members=True):
     """Generate simple RST content for all modules in a category"""
     title = f"{category_name} API"
     content = f"""{title}
@@ -38,14 +37,19 @@ def generate_simple_api_doc(category_name, modules, description=""):
     
     for module in modules:
         module_title = module.split('.')[-1].replace('_', ' ').title()
+        members_block = ""
+        if include_members:
+            members_block = (
+                "   :members:\n"
+                "   :undoc-members:\n"
+                "   :show-inheritance:\n"
+            )
         content += f"""
 {module_title}
 {'-' * len(module_title)}
 
 .. automodule:: {module}
-   :members:
-   :undoc-members:
-   :show-inheritance:
+{members_block}
 
 """
     return content
@@ -67,16 +71,17 @@ def main():
             "filename": "processing_objects"
         },
         "Data Objects": {
-            "path": specula_path / "data_objects", 
+            "path": specula_path / "data_objects",
             "package": "specula.data_objects",
             "description": "Data objects for representing simulation data.",
             "filename": "data_objects"
         },
         "Utility Functions": {
             "path": specula_path / "lib",
-            "package": "specula.lib", 
+            "package": "specula.lib",
             "description": "Utility functions and libraries.",
-            "filename": "lib"
+            "filename": "lib",
+            "include_members": False,
         }
     }
 
@@ -93,8 +98,9 @@ def main():
             # Generate content
             content = generate_simple_api_doc(
                 category_name,
-                all_modules, 
-                config["description"]
+                all_modules,
+                config["description"],
+                include_members=config.get("include_members", True),
             )
 
             # Write the file
@@ -130,6 +136,7 @@ def main():
     print("\nGenerated files:")
     for rst_file in sorted(api_docs_path.glob("*.rst")):
         print(f"  - {rst_file.name}")
+
 
 if __name__ == "__main__":
     main()

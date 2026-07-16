@@ -1,10 +1,11 @@
 from seeing.integrator import evaluateFormula, cpulib
 from symao.turbolence import createTurbolenceFormulary, ft_phase_screen0
 
-turbolenceFormulas = createTurbolenceFormulary()
-
 from specula.base_data_obj import BaseDataObj
 from specula import ASEC2RAD, RAD2ASEC, cpuArray, np
+
+turbolenceFormulas = createTurbolenceFormulary()
+
 
 def seeing_to_r0(seeing, wvl=500.e-9):
     return 0.9759*wvl/(seeing* ASEC2RAD)
@@ -23,9 +24,13 @@ def cn2_to_seeing(cn2, wvl=500.e-9):
 
 
 class InfinitePhaseScreen(BaseDataObj):
-
-    def __init__(self, mx_size, pixel_scale, r0, L0, random_seed=None, stencil_size_factor=1, xp=None,
-                 target_device_idx=None, precision=None):
+    """
+    Infinite Phase Screen Data object.
+    This class generates and holds an infinite phase screen generated using a stochastic
+    process that simulates atmospheric turbulence.
+    """
+    def __init__(self, mx_size, pixel_scale, r0, L0, random_seed, stencil_size_factor=1,
+                 xp=None, target_device_idx=None, precision=None):
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
         self.random_data_col = None
@@ -57,10 +62,7 @@ class InfinitePhaseScreen(BaseDataObj):
         self.A_mat = None
         self.B_mat = None
 
-        if random_seed is None:
-            raise ValueError("random_seed must be provided")
-        else:
-            self.random_seed = int(random_seed)
+        self.random_seed = int(random_seed)
         self.rng = self.xp.random.default_rng(self.random_seed)
 
         #self.set_stencil_coords_basic()
@@ -165,23 +167,23 @@ class InfinitePhaseScreen(BaseDataObj):
         self.full_scrn = self.to_xp(tmp)
         self.full_scrn *= (2 * np.pi) ** (11/6) # this is to compensate SYMAO bug that uses PSD(k) instead of PSD(f)
         self.full_scrn -= self.xp.mean(self.full_scrn[:self.requested_mx_size, :self.requested_mx_size])
-        # print(self.full_scrn.shape)
+        # self.logger.debug(self.full_scrn.shape)
 
     def prepare_random_data_col(self):
         if self.random_data_col is None:
-#            print('generating new random data col')
+#            self.logger.debug('generating new random data col')
             self.random_data_col = self.rng.standard_normal(size=self.stencil_size)
         else:
             pass
-#            print('using old random data col')
+#            self.logger.debug('using old random data col')
 
     def prepare_random_data_row(self):
         if self.random_data_row is None:
-#            print('generating new random data row')
+#            self.logger.debug('generating new random data row')
             self.random_data_row = self.rng.standard_normal(size=self.stencil_size)
         else:
             pass
-#            print('using old random data row')
+#            self.logger.debug('using old random data row')
 
     def get_new_line(self, row, after):
         if row:

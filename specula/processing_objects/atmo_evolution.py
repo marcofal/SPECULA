@@ -1,11 +1,9 @@
-import numpy as np
-
-from specula.base_processing_obj import BaseProcessingObj
+from specula import cpuArray, ASEC2RAD, np
+from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.base_value import BaseValue
 from specula.data_objects.layer import Layer
 from specula.lib.phasescreen_manager import phasescreens_manager
 from specula.connections import InputValue
-from specula import cpuArray, ASEC2RAD
 from specula.data_objects.simul_params import SimulParams
 
 
@@ -14,29 +12,65 @@ ATMO_WAVELENGTH = 500.0
 
 
 class AtmoEvolution(BaseProcessingObj):
+    """
+    Atmospheric turbulence evolution processing object.
+    Generates and evolves atmospheric phase screens based on input parameters such as
+    seeing, wind speed, and wind direction.
+    """
     def __init__(self,
                  simul_params: SimulParams,
-                 L0: list,           # TODO =[1.0],
-                 heights: list,      # TODO =[0.0],
-                 Cn2: list,          # TODO =[1.0],
-                 data_dir: str,      # TODO ="",
+                 L0: list,
+                 heights: list,
+                 Cn2: list,
+                 data_dir: str = "",
                  fov: float=0.0,
                  pixel_phasescreens: int=8192,
                  seed: int=1,
                  extra_delta_time: float=0,
-                 verbose: bool=False,
                  fov_in_m: float=None,
                  pupil_position:list =[0,0],
                  target_device_idx: int=None,
                  precision: int=None):
+        """
+        Note
+        ----
+        Phase screens are always generated at a reference wavelength of 500 nm.
 
+        Parameters
+        ----------
+        simul_params : SimulParams
+            Simulation parameters object containing global simulation settings.
+        L0 : list [m]
+            Outer scale(s) of turbulence for each layer in meters.
+        heights : list [m]
+            Heights of the atmospheric layers in meters (at zenith).
+        Cn2 : list [1]
+            Fractional Cn2 values for each layer (must sum to 1.0).
+        data_dir : str
+            Directory path for storing/loading phase screen data (automatically set by simul.py).
+        fov : float [arcsec], optional
+            Field of view in arcseconds. Default is 0.0.
+        pixel_phasescreens : int [1], optional
+            Size of the square phase screens in pixels. Default is 8192.
+        seed : int [1], optional
+            Seed for random number generation. Must be >0. Default is 1.
+        extra_delta_time : float or list [s], optional
+            Extra time offset for phase screen evolution in seconds. Default is 0.
+        fov_in_m : float [m], optional
+            Field of view in meters. If provided, overrides fov parameter. Default is None.
+        pupil_position : list [m], optional
+            [x, y] position of the pupil in meters. Default is [0, 0].
+        target_device_idx : int [1], optional
+            Target device index for computation (CPU/GPU). Default is None (uses global setting).
+        precision : int [1], optional
+            Precision for computation (0 for double, 1 for single). Default is None
+            (uses global setting).
+        """
         super().__init__(target_device_idx=target_device_idx, precision=precision)
 
-        self.simul_params = simul_params
-
-        self.pixel_pupil = self.simul_params.pixel_pupil
-        self.pixel_pitch = self.simul_params.pixel_pitch
-        self.zenithAngleInDeg = self.simul_params.zenithAngleInDeg
+        self.pixel_pupil = simul_params.pixel_pupil
+        self.pixel_pitch = simul_params.pixel_pitch
+        zenithAngleInDeg = simul_params.zenithAngleInDeg
 
         self.n_phasescreens = len(heights)
         self.last_position = np.zeros(self.n_phasescreens, dtype=self.dtype)
@@ -54,10 +88,10 @@ class AtmoEvolution(BaseProcessingObj):
         self.inputs['wind_speed'] = InputValue(type=BaseValue)
         self.inputs['wind_direction'] = InputValue(type=BaseValue)
 
-        if self.zenithAngleInDeg is not None:
-            self.airmass = 1.0 / np.cos(np.radians(self.zenithAngleInDeg), dtype=self.dtype)
-            print(f'AtmoEvolution: zenith angle is defined as: {self.zenithAngleInDeg} deg')
-            print(f'AtmoEvolution: airmass is: {self.airmass}')
+        if zenithAngleInDeg is not None:
+            self.airmass = 1.0 / np.cos(np.radians(zenithAngleInDeg), dtype=self.dtype)
+            self.logger.info(f'zenith angle is defined as: {zenithAngleInDeg} deg')
+            self.logger.info(f'airmass is: {self.airmass}')
         else:
             self.airmass = 1.0
 
@@ -80,7 +114,6 @@ class AtmoEvolution(BaseProcessingObj):
 
         self.L0 = L0
         self.Cn2 = np.array(Cn2, dtype=self.dtype)
-        self.pixel_pupil = self.pixel_pupil
         self.data_dir = data_dir
 
         self.pixel_square_phasescreens = pixel_phasescreens
@@ -89,8 +122,6 @@ class AtmoEvolution(BaseProcessingObj):
         if self.pixel_square_phasescreens < max(self.pixel_layer):
             raise ValueError('Error: phase-screens dimension must be'
                              'greater than layer dimension!')
-
-        self.verbose = verbose
 
         # Initialize layer list with correct heights
         self.layer_list = []
@@ -112,14 +143,17 @@ class AtmoEvolution(BaseProcessingObj):
         if not np.isclose(np.sum(self.Cn2), 1.0, atol=1e-6):
             raise ValueError(f' Cn2 total must be 1. Instead is: {np.sum(self.Cn2)}.')
 
-    @property
-    def seed(self):
-        return self._seed
-
-    @seed.setter
-    def seed(self, value):
-        self._seed = value
         self.compute()
+
+    @classmethod
+    def input_names(cls):
+        return {'seeing': InputDesc(BaseValue, 'Atmospheric seeing value'),
+                'wind_speed': InputDesc(BaseValue, 'Wind speed for each atmospheric layer'),
+                'wind_direction': InputDesc(BaseValue, 'Wind direction for each atmospheric layer')}
+
+    @classmethod
+    def output_names(cls):
+        return {'layer_list': OutputDesc(list, 'List of atmospheric phase screen layers')}
 
     def compute(self):
         # Phase screens list
@@ -129,7 +163,7 @@ class AtmoEvolution(BaseProcessingObj):
         self.pixel_phasescreens = int(self.xp.max(self.pixel_layer))
         temp_screens = []
 
-        if len(self.xp.unique(self.L0)) == 1:
+        if len(self.xp.unique(self.to_xp(self.L0))) == 1:
             # Number of rectangular phase screens from a single square phasescreen
             n_ps_from_square_ps = self.xp.floor(
                 self.pixel_square_phasescreens / self.pixel_phasescreens
@@ -149,7 +183,7 @@ class AtmoEvolution(BaseProcessingObj):
             square_phasescreens = phasescreens_manager(L0, self.pixel_square_phasescreens,
                                                         self.pixel_pitch, self.data_dir,
                                                         seed=seed, precision=self.precision,
-                                                        verbose=self.verbose, xp=self.xp)
+                                                        xp=self.xp)
 
             square_ps_index = -1
             ps_index = 0
@@ -180,7 +214,6 @@ class AtmoEvolution(BaseProcessingObj):
                                                        self.data_dir,
                                                        seed=seed,
                                                        precision=self.precision,
-                                                       verbose=self.verbose,
                                                        xp=self.xp)
 
             for i in range(self.n_phasescreens):
@@ -233,25 +266,64 @@ class AtmoEvolution(BaseProcessingObj):
         else:
             self.scale_coeff = 0.0
 
-    def trigger_code(self):
 
-        # if len(self.phasescreens) != len(wind_speed) \
-        #   or len(self.phasescreens) != len(wind_direction):
-        #     raise ValueError('Error: number of elements of wind speed'
-        #                      'and/or direction does not match the number of phasescreens')
+    def trigger_code(self):
         wind_speed = cpuArray(self.local_inputs['wind_speed'].value)
         wind_direction = cpuArray(self.local_inputs['wind_direction'].value)
 
         # Compute the delta position in pixels (time evolution)
         delta_position = wind_speed * self.delta_time / self.pixel_pitch  # [pixel]
 
+        # Get quotient and remainder for wind direction
+        wdf, wdi = np.modf(wind_direction / 90.0)
+        wdf_full = wdf * 90
+
+        # Update layer list
+        new_position, effective_position = self._update_layer_list(
+            wind_speed=wind_speed,
+            delta_position=delta_position,
+            extra_delta_time=self.extra_delta_time,
+            last_position=self.last_position,
+            layer_list=self.layer_list,
+            wdi=wdi,
+            wdf_full=wdf_full
+        )
+
+        # Update tracking
+        self.last_position[:] = new_position
+        self.last_effective_position[:] = effective_position
+        self.last_t = self.current_time
+
+
+    def _update_layer_list(self, wind_speed, delta_position, extra_delta_time,
+                          last_position, layer_list, wdi, wdf_full):
+        """Update a layer list with given extra_delta_time.
+        
+        Parameters
+        ----------
+        wind_speed : array [m/s]
+            Wind speed for each layer [m/s]
+        delta_position : array [pixels]
+            Position change since last frame [pixels]
+        extra_delta_time : array [s]
+            Extra time offset for each layer [s]
+        last_position : array [pixels]
+            Last accumulated position (will be updated in place)
+        layer_list : list [1]
+            List of Layer objects to update
+        wdi : array [deg]
+            Integer part of wind direction / 90
+        wdf_full : array [1]
+            Fractional part of wind direction in degrees
+        """
+
         # Compute extra offset that doesn't get accumulated
-        extra_offset = wind_speed * self.extra_delta_time / self.pixel_pitch  # [pixel]
+        extra_offset = wind_speed * extra_delta_time / self.pixel_pitch  # [pixel]
 
-        # Update last_position with delta_position
-        new_position = self.last_position + delta_position  # [pixel]
+        # Update position with delta_position
+        new_position = last_position + delta_position  # [pixel]
 
-        # cycle screens consider the effective position for checking boundary conditions
+        # Cycle screens considering the effective position
         if self.cycle_screens:
             new_position = np.where(
                 new_position + extra_offset + self.pixel_layer >= self.phasescreens_sizes_array,
@@ -260,31 +332,32 @@ class AtmoEvolution(BaseProcessingObj):
             )
 
         # Effective position = accumulated position + constant offset
-        # Note: extra_offset is added at each frame because it is a function of wind speed
         effective_position = new_position + extra_offset  # [pixel]
-
-        # Get quotient and remainder
-        wdf, wdi = np.modf(wind_direction/90.0)
-        wdf_full = wdf * 90
 
         effective_position_quo = np.floor(effective_position).astype(np.int64)
         effective_position_rem = (effective_position - effective_position_quo).astype(self.dtype)
 
+        # Update each layer
         for ii, p in enumerate(self.phasescreens):
             pos = int(effective_position_quo[ii])
             ipli = int(self.pixel_layer[ii])
             ipli_p = int(pos + self.pixel_layer[ii])
-            layer_phase = (1.0 - effective_position_rem[ii]) * p[0: ipli, pos: ipli_p] \
-                          + effective_position_rem[ii] * p[0: ipli, pos+1: ipli_p+1]
+
+            # Linear interpolation between positions
+            layer_phase = (1.0 - effective_position_rem[ii]) * p[0:ipli, pos:ipli_p] \
+                        + effective_position_rem[ii] * p[0:ipli, pos + 1:ipli_p + 1]
+
+            # Apply wind direction rotation
             layer_phase = self.xp.rot90(layer_phase, wdi[ii])
             if not wdf_full[ii] == 0:
                 layer_phase = self.ndimage_rotate(
                     layer_phase, wdf_full[ii], reshape=False, order=1
                 )
-            self.layer_list[ii].phaseInNm[:] = layer_phase * self.scale_coeff
-            self.layer_list[ii].generation_time = self.current_time
 
-        # Update position output
-        self.last_position = new_position
-        self.last_effective_position = effective_position.copy()
-        self.last_t = self.current_time
+            layer_list[ii].phaseInNm[:] = layer_phase * self.scale_coeff
+            layer_list[ii].generation_time = self.current_time
+
+        # Update position in place
+        last_position[:] = new_position
+
+        return new_position, effective_position

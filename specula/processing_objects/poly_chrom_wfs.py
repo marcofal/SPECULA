@@ -1,14 +1,15 @@
 from specula import RAD2ASEC
-from specula.base_processing_obj import BaseProcessingObj
+from specula.base_processing_obj import BaseProcessingObj, InputDesc, OutputDesc
 from specula.connections import InputValue
 from specula.data_objects.electric_field import ElectricField
 from specula.data_objects.intensity import Intensity
 from specula.lib.make_xy import make_xy
 
 class PolyChromWFS(BaseProcessingObj):
-    """
-    Base (abstract) class for polychromatic wavefront sensors (WFS).
-    Handles multiple wavelengths, flux factors, tilts, and output normalization.
+    """     
+    Poly-chromatic WFS abstract processing object.    
+    Base class for polychromatic wavefront sensors which handles 
+    multiple wavelengths, flux factors, tilts, and output normalization.
     """
 
     def __init__(self,
@@ -47,6 +48,14 @@ class PolyChromWFS(BaseProcessingObj):
         self.outputs['out_i'] = self._out_i
 
         self.inputs['in_ef'] = InputValue(type=ElectricField)
+
+    @classmethod
+    def input_names(cls):
+        return {'in_ef': InputDesc(ElectricField, 'Input electric field from the telescope pupil')}
+
+    @classmethod
+    def output_names(cls):
+        return {'out_i': OutputDesc(Intensity, 'Output intensity on the detector')}
 
     def _create_unit_tilts(self, in_ef_size, in_ef_pixel_pitch):
         """Create unit tilt phase arrays (1 pixel tilt) in nm."""
