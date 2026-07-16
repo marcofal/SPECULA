@@ -43,6 +43,9 @@ class GainOptimizerTemp(BaseProcessingObj):
                  initial_gain: float = 0.1,
                  prediction_horizon: int = 30,
                  n_realizations: int = 10,
+                 noise_variance: float = 100,
+                 ar_order: int = 20,
+                 rho: float = 1e3,
                  ):
 
         super().__init__(target_device_idx=target_device_idx, precision=precision)
@@ -69,6 +72,10 @@ class GainOptimizerTemp(BaseProcessingObj):
         self.running_mean = running_mean
         self.prediction_horizon = prediction_horizon
         self.n_realizations = n_realizations
+        self.ar_order = int(ar_order)
+        self.rho = float(rho)
+
+        self.noise_variance = noise_variance
 
         # Get number of modes from filter
         self.nmodes = iir_filter_data.nfilter #1 for the test file
@@ -86,14 +93,8 @@ class GainOptimizerTemp(BaseProcessingObj):
 
         self.plot_debug = False  # Enable plotting for debugging
 
-        self.A, self.B, self.C, self.D, self.H_cl = self._generate_state_space() #generate state space matrices for the closed loop system
-        # self._A_func = sp.lambdify(sp.symbols('g', real=True, positive=True), self.A, modules='numpy')
-        # self._B_func = sp.lambdify(sp.symbols('g', real=True, positive=True), self.B, modules='numpy')
-        # self._C_func = sp.lambdify(sp.symbols('g', real=True, positive=True), self.C, modules='numpy')
-        # self._D_func = sp.lambdify(sp.symbols('g', real=True, positive=True), self.D, modules='numpy')
+        self.A, self.B, self.C, self.D, self.A_T, self.B_T, self.C_T, self.D_T, self.H_cl = self._generate_state_space() #generate state space matrices for the closed loop system
 
-        
-        # self.iir_filter_data.set_gain(self.xp.repeat(initial_gain, self.nmodes))  # Set initial gain
         self.iir_filter_data.set_gain(self.xp.repeat(initial_gain, self.nmodes))  # Set initial gain
         
         self.optimized_gain = BaseValue(
@@ -230,16 +231,17 @@ class GainOptimizerTemp(BaseProcessingObj):
         den = self.xp.asarray(cpuArray(self.iir_filter_data.den.copy()[0, :]))
 
         # Normalize numerator by the original gain and apply new test gain
-        # orig_gain = float(cpuArray(self.iir_filter_data.gain[0]))
+        orig_gain = float(cpuArray(self.iir_filter_data.gain[0]))
         # orig_gain = g
-        num_normalized = self.xp.asarray(num, dtype=float) * g
+        num_normalized = self.xp.asarray(num, dtype=float) / orig_gain
+        num = num_normalized * g  # Scale numerator by symbolic gain g for optimization
         # Determine integer delays (in samples). Use rounding to allow non-integer attributes.
         total_delay = int(round(self.delay))
         sensor_delay = total_delay // 2
         actuator_delay = total_delay - sensor_delay
 
-        # Calculate regulator transfer function R(z)
-        num_val = self.xp.polyval(num_normalized[::-1], z)
+        # Calculate regulator transfer function R(z) with symbolic gain included.
+        num_val = self.xp.polyval(num[::-1], z)
         den_val = self.xp.polyval(den[::-1], z)
         # den_val = self.xp.where(self.xp.abs(den_val) < 1e-12, 1e-12, den_val)
         R_tf = num_val / den_val
@@ -247,6 +249,7 @@ class GainOptimizerTemp(BaseProcessingObj):
         # Sensor and actuator delays in z-domain
         S_tf = z**(-sensor_delay)
         D_tf = z**(-actuator_delay)
+
 
         #Add the Low-pass mirror dynamics 
         lp_num = self.xp.asarray(cpuArray(self.low_pass_data.num.copy()[0, :])) if self.low_pass_data else self.xp.array([1.0])
@@ -262,63 +265,77 @@ class GainOptimizerTemp(BaseProcessingObj):
         denominator = 1.0 + open_loop
         # denominator = self.xp.where(self.xp.abs(denominator) < 1e-12, 1e-12, denominator)
         H_cl = S_tf / denominator
+        T_cl = open_loop / denominator  # complementary sensitivity (from reference to output)
+
+        
         # Extract and print the coefficients of z in the numerator and denominator of H
 
+        # sensitivity realization
         num_expr, den_expr = sp.fraction(sp.together(H_cl))
         num_poly = sp.Poly(num_expr, z)
         den_poly = sp.Poly(den_expr, z)
-        # quotient, remainder = sp.div(num_poly.as_expr(), den_poly.as_expr(), z)
-        # H_constant = (quotient)
-        # H_proper = (remainder/den_poly.as_expr())
-        # H = H_constant + H_proper
-        # print("H as a proper function plus a constant:")
-        # sp.pprint(H_cl)
-        # exit()
-        # num_expr, den_expr = sp.fraction(H)
-        # den_poly = sp.Poly(den_expr, z)
-        num_coeffs = num_poly.all_coeffs()  # Coefficients in descending powers of z
-        den_coeffs = den_poly.all_coeffs()  # Coefficients in descending powers of z
 
-        # Normalize the denominator (make it monic)
         lead = den_poly.LC()
         den_poly = sp.Poly(den_poly.as_expr() / lead, z)
         num_poly = sp.Poly(num_poly.as_expr() / lead, z)
 
-        print("Normalized numerator polynomial:"
-            , num_poly)
-        print("Normalized denominator polynomial:"
-            , den_poly)
-
-        # Let n be the degree of the denominator
         n = den_poly.degree()
-        # Get coefficients of den(z) = z^n + a_{n-1} z^(n-1) + … + a_0;
-        # all_coeffs() returns [1, a_{n-1}, …, a_0]
         den_coeffs = den_poly.all_coeffs()
+
         A = sp.zeros(n)
         for i in range(n - 1):
             A[i, i + 1] = 1
-        # Last row: use the den_coeffs in reverse (skip the leading 1)
         A[n - 1, :] = sp.Matrix([-den_coeffs[-(j + 1)] for j in range(n)]).T
 
-        # Input vector B: only the last entry is 1
         B = sp.zeros(n, 1)
         B[n - 1] = 1
 
-        # For a strictly proper system the numerator degree is less than n.
-        # Get the coefficients of the numerator (in descending powers).
         num_coeffs = num_poly.all_coeffs()
-        # Pad with zeros on the left if needed so that num_coeffs has length n
         if len(num_coeffs) < n:
             num_coeffs = [0] * (n - len(num_coeffs)) + num_coeffs
-        # Define the output matrix C as a row vector with these coefficients
-        C = sp.Matrix(num_coeffs[::-1]).T  # convertible to a 1xn row vector when needed
 
-        # Since H(z) is strictly proper, we set the feedthrough term D to zero.
+        # PATCH: do NOT reverse
+        C = sp.Matrix(num_coeffs).T
         D = sp.sympify(0)
+
+        # complementary sensitivity realization
+        num_T, den_T = sp.fraction(sp.together(T_cl))
+        num_T_poly = sp.Poly(num_T, z)
+        den_T_poly = sp.Poly(den_T, z)
+
+        lead_T = den_T_poly.LC()
+        den_T_poly = sp.Poly(den_T_poly.as_expr() / lead_T, z)
+        num_T_poly = sp.Poly(num_T_poly.as_expr() / lead_T, z)
+
+        # PATCH: extract feedthrough like offline
+        quotient_T, remainder_T = sp.div(num_T_poly.as_expr(), den_T_poly.as_expr(), z)
+        D_T = sp.sympify(quotient_T)
+        num_T_poly_proper = sp.Poly(remainder_T, z)
+
+        n_T = den_T_poly.degree()
+        den_T_coeffs = den_T_poly.all_coeffs()
+
+        A_T = sp.zeros(n_T)
+        for i in range(n_T - 1):
+            A_T[i, i + 1] = 1
+        A_T[n_T - 1, :] = sp.Matrix([-den_T_coeffs[-(j + 1)] for j in range(n_T)]).T
+
+        B_T = sp.zeros(n_T, 1)
+        B_T[n_T - 1] = 1
+
+        num_T_coeffs = num_T_poly_proper.all_coeffs()
+        if len(num_T_coeffs) < n_T:
+            num_T_coeffs = [0] * (n_T - len(num_T_coeffs)) + num_T_coeffs
+
+        # PATCH: do NOT reverse
+        C_T = sp.Matrix(num_T_coeffs).T
+
+        print("Complementary Sensitivity numerator polynomial:", num_T_poly)
+        print("Complementary Sensitivity denominator polynomial:", den_T_poly)
 
         self.x = self.xp.zeros((n, self.n_realizations), dtype=self.dtype)  # State vector placeholder
         # A, B, C, D = iir_filter_data.to_state_space()
-        return A, B, C, D, H_cl
+        return A, B, C, D, A_T, B_T, C_T, D_T, H_cl
     
     def setup(self):
         super().setup()
@@ -369,16 +386,15 @@ class GainOptimizerTemp(BaseProcessingObj):
 
         #Once at least opt_dt samples are stored, perform optimization
         data_to_consider = int(min(self.identification_dt, len(self.data_history)))
-
-        data = self.xp.stack([self.xp.asarray(d[1:2]) for d in self.data_history])[-data_to_consider:, :].flatten()     # Use only the last opt_dt samples of the tilt mode TODO
-        # print(data.shape);exit()
-
+        # Match offline SISO behavior while handling both 1D and multi-component exogenous inputs.
+        data = self.xp.asarray([
+            self.xp.asarray(d).ravel()[1] if self.xp.asarray(d).ravel().size > 1 else self.xp.asarray(d).ravel()[0]
+            for d in self.data_history
+        ][-data_to_consider:])
         if self.plot_debug:
             # Convert stored history to a NumPy array and plot the last opt_dt samples for each mode
-
             # Build a (N, nmodes) numpy array from the stored history
             time_plot = self.xp.asarray([self.t_to_seconds(tt) for tt in self.time_hist])
-
             # Choose how many points to show (use at most opt_dt samples)
             n_plot = min(len(data), int(self.opt_dt))
             if n_plot == 0:
@@ -398,13 +414,12 @@ class GainOptimizerTemp(BaseProcessingObj):
                 plt.legend(loc="upper right", fontsize="small")
             plt.tight_layout()
             plt.show()
-        
+
         # Calculate maximum stable gains
         gmax_vec = self._calculate_max_gains() 
         max_g = self.xp.max(gmax_vec)
 
-        turb_pred = self._predict_turbulent_signal(data, order=10) #last opt_dt values to learn
-        # print(turb_pred.shape);exit()
+        turb_pred = self._predict_turbulent_signal(data, order=self.ar_order) # last opt_dt values to learn
         opt_g = self._optimize_g(turb_pred, max_g) # predicted signal to optimize  --> minimum energy
         # Ensure opt_g and max_g are xp arrays and clip elementwise.
         # opt_arr = self.xp.asarray(opt_g)
@@ -438,221 +453,164 @@ class GainOptimizerTemp(BaseProcessingObj):
     
 
 
-    def _exo_id_autoreg(self, data,id_hor,order):
+    def _exo_id_autoreg(self, data,order):
         """
         Identification of the exosystem with an autoregressive model of a given order
         """
-        model = AutoReg(data[-id_hor:], lags=order, old_names=False)
+        model = AutoReg(data, lags=order, exog=np.random.normal(0, 1, size=(len(data), 1)))
         model_fit = model.fit()
-        ar_params = model_fit.params[1:]  # exclude intercept
-
-        # Build companion matrix A
-        A = np.zeros((order, order))
-        A[0, :] = ar_params
-        for i in range(1, order):
-            A[i, i-1] = 1.0
-
-        # Get the noise standard deviation from the model
-        noise_std = np.sqrt(model_fit.sigma2)
-
-        
-        return A, model_fit, noise_std
+        ar_params = model_fit.params[1:1+order]  # exclude intercept
+        exog_params = model_fit.params[1+order:]  # exogenous parameters if needed
+        beta_exog = float(exog_params[0]) if exog_params.size > 0 else 0.0
+        noise_std = self.xp.std(model_fit.resid)
+        return model_fit, noise_std, beta_exog, ar_params
     
 
     def _predict_turbulent_signal(self, data, order):
         """
         predict the turbulent signal in the predictive optimization horizon (opt_dt)
         """
-        A_exo, model_fit, noise_std = self._exo_id_autoreg(data, id_hor=self.prediction_horizon, order=order)
+        model_fit, noise_std, beta_exog, ar_params = self._exo_id_autoreg(data, order=order)
         # Get the noise standard deviation from the model
+        # Generate multiple realizations of the future signal
 
-        x = self.xp.zeros((A_exo.shape[0], self.prediction_horizon, self.n_realizations), dtype=self.dtype) #state, time, realization
-        y = self.xp.zeros((self.n_realizations, self.prediction_horizon), dtype=self.dtype) #realization, time
-        x[:,0,:] = self.xp.repeat(data[-order:].copy().astype(self.dtype), self.n_realizations).reshape(order, self.n_realizations)  # Use the last 'order' values of data
-        y[:,0] = self.xp.repeat(data[-1].copy().astype(self.dtype), self.n_realizations).reshape(self.n_realizations)  # First predicted output is the last known data point
+        y  = self.xp.zeros((self.n_realizations, self.prediction_horizon), dtype=self.dtype)
+        y[:,:order] = self.xp.repeat(data[-order:].reshape(1, -1), self.n_realizations, axis=0).astype(self.dtype)  # Initialize with the last 'order' values from the data
+        exog_white_noise = self.xp.random.normal(0, 1, size=(self.n_realizations, self.prediction_horizon)).astype(self.dtype)
+        ar_innovation = self.xp.random.normal(0, noise_std, size=(self.n_realizations, self.prediction_horizon)).astype(self.dtype)
+        for i in range(self.n_realizations):
+            for j in range(order, self.prediction_horizon):
+                #constant term
+                y[i, j] = model_fit.params[0]
+                for k in range(1, order+1):
+                    y[i, j] += ar_params[k-1] * y[i, j-k]
+                y[i, j] += beta_exog * exog_white_noise[i, j] + ar_innovation[i, j]
 
-        for t in range(1, self.prediction_horizon):
-            
-            noise = self.xp.zeros((order, self.n_realizations), dtype=self.dtype)
-            noise_t = self.xp.random.randn(self.n_realizations) * noise_std
-            #create noise_t vector --> order, n_realizations
-
-            noise[0, :] = noise_t
-            #
-
-            # print(f"noise_t shape: {noise_t.shape}, noise shape: {noise.shape}, x shape: {x[:,t:t+1, :] .shape}, A_exo shape: {A_exo.shape}, t: {t}")
-
-            # print(f"A_exo shape: {A_exo.shape}, x shape: {x.shape}, noise_t shape: {noise_t.shape}")
-            for j in range(self.n_realizations):
-                x[:,t, j:j+1] = A_exo @ x[:,t-1, j:j+1] + noise[:, j:j+1]
-                y[j, t] = x[0,t, j]
-
-            
-        
         if self.plot_debug:
-
-            plt.figure(figsize=(10, 6))
-            # Calculate mean and standard deviation across realizations
-            y_mean = self.xp.mean(y, axis=0)
-            y_std = self.xp.std(y, axis=0)
-
-            # Create time axis for plotting
-            t_axis = self.xp.arange(self.prediction_horizon) * self.time_step
-
-            # Convert to CPU arrays for plotting
-            t_plot = cpuArray(t_axis)
-            y_mean_plot = cpuArray(y_mean)
-            y_std_plot = cpuArray(y_std)
-            y_plot = cpuArray(y)
-
-            # Plot individual realizations
-            for j in range(min(self.n_realizations, 10)):  # Limit to 10 realizations for clarity
-                plt.plot(t_plot, y_plot[j, :], alpha=0.3, linewidth=0.5, color='gray')
-
-            # Plot mean signal
-            plt.plot(t_plot, y_mean_plot, 'b-', linewidth=2, label='Mean')
-
-            # Plot variance tube (mean ± std)
-            plt.fill_between(t_plot, 
-                             y_mean_plot - y_std_plot, 
-                             y_mean_plot + y_std_plot, 
-                             alpha=0.3, color='blue', label='±1 Std Dev')
-
-            plt.xlabel('Time (s)')
-            plt.ylabel('Amplitude')
-            plt.title(f'Predicted Turbulent Signal ({self.n_realizations} realizations)')
-            plt.legend()
-            plt.grid(True, alpha=0.3)
+            plt.figure(figsize=(10, 4 + 1 * self.n_realizations))
+            y_np = np.asarray(cpuArray(y))
+            for i in range(self.n_realizations):
+                plt.plot(y_np[i], alpha=0.55, label=f"Realization {i+1}")
+            plt.plot(np.mean(y_np, axis=0), color="k", linewidth=2.0, label="Mean prediction")
+            plt.xlabel("Prediction step")
+            plt.ylabel("Predicted signal y")
+            plt.title(f"Predicted turbulent signal over horizon (order={order})")
+            plt.grid(True)
+            plt.legend(loc="upper right", fontsize="small")
             plt.tight_layout()
             plt.show()
 
+            past_data = np.asarray(cpuArray(data)).ravel()
+            if past_data.size >= 2 and y_np.shape[1] >= 2:
+                nperseg = min(1024, past_data.size, y_np.shape[1])
+                fs = 1.0 / float(self.time_step)
 
+                freq_past, psd_past = signal.welch(past_data, fs=fs, nperseg=nperseg)
+                psd_pred_accum = None
+                for i in range(self.n_realizations):
+                    freq_pred, psd_pred = signal.welch(y_np[i], fs=fs, nperseg=nperseg)
+                    if psd_pred_accum is None:
+                        psd_pred_accum = psd_pred
+                    else:
+                        psd_pred_accum += psd_pred
+                psd_pred_mean = psd_pred_accum / self.n_realizations
 
+                plt.figure(figsize=(10, 5))
+                plt.loglog(freq_past, psd_past, label="Past data PSD", linewidth=2.0)
+                plt.loglog(freq_pred, psd_pred_mean, label="Predicted PSD (mean)", linewidth=2.0)
+                plt.xlabel("Frequency (Hz)")
+                plt.ylabel("PSD")
+                plt.title(f"Predicted vs past-data PSD (order={order})")
+                plt.grid(True, which="both", alpha=0.3)
+                plt.legend(loc="upper right", fontsize="small")
+                plt.tight_layout()
+                plt.show()
+            
         return y
 
     def _optimize_g(self, predicted_signal, max_gain):
         """
         Optimize gain based on predicted turbulent signal.
         """
-        #TODO vector geeralization?
+
+        n_points = predicted_signal.shape[1]
+        noise_seq = self.xp.random.randn(self.n_realizations, n_points).astype(self.dtype)
+
+        min_gain = 0.1 if float(max_gain) > 0.1 else 0.0
+
         res = optimize.minimize_scalar(
-            lambda gg: self._cost_function(gg, predicted_signal), 
-            # bracket=(0.0, self.iir_filter_data.gain.copy()[0], max_gain),
-            bounds=(0.0, max_gain), 
-            method='bounded', 
-            options={"maxiter": 1e7, "xatol": 1e-16}
+            lambda gg: self._cost_function(
+                gg,
+                predicted_signal,
+                noise_sequence_unit=noise_seq,
+            ),
+            bounds=(min_gain, float(max_gain)),
+            method='bounded',
+            options={"maxiter": int(1e5), "xatol": 1e-6},
         )
-        # x0 = self.dtype(0.5 * max_gain)
-        # max_gn = self.dtype(max_gain)
-        # res = optimize.minimize(
-        #     # fun=lambda gg: self.dtype(self._cost_function(gg, predicted_signal)),
-        #     fun=lambda gg: self.dtype(self._cost_function(gg, predicted_signal)),
-        #     x0= self.iir_filter_data.gain.copy()[0],  # Initial guess
-        #     # args=(predicted_signal, True),
-        #     method="L-BFGS-B",
-        #     bounds=[(0.0, max_gn)],
-        #     options={"maxiter": int(1e6), "ftol": 1e-16, "gtol": 1e-16},
-        # )
-        # print(res.x);exit()
-        # # # ensure downstream code sees a scalar like minimize_scalar returned
-        # if isinstance(res.x, self.dtype):
-        #     res.x = self.dtype(res.x.ravel()[0])
-
         return res.x
-
-    def _cost_function(self, gain, predicted_signal, time_domain: bool = True):
-
-        """
-        Cost function to minimize: squared sum of output signal y.
-        
-        Computes the output y of the closed-loop system with transfer function:
-        H_cl = S / (1 + S * R * D)
-        
-        Where:
-        - S: sensor (simple delay)
-        - R: regulator (IIR filter with given gain)
-        - D: actuator (another delay)
-        
-        Args:
-            gain: The gain to test for the IIR filter
-            t: Current time step
-            x: Current state
-            predicted_signal: Input signal (turbulent prediction)
-            
-        Returns:
-            Cost: squared sum of output signal y
-        """
-        
-        # Extract scalar gain value from array if needed
+    
+    def _cost_function(self, gain, predicted_signal, noise_sequence_unit=None):
         if hasattr(gain, '__len__'):
             gain = float(gain[0])
         else:
             gain = float(gain)
 
-        z = sp.symbols('z', complex=True)
         g = sp.symbols('g', real=True, positive=True)
-
-        n_points = predicted_signal.shape[1]
-        fs = 1.0 / self.time_step
-        freq = self.xp.fft.fftfreq(n_points, 1 / fs)
-        omega = 2 * self.xp.pi * freq
-        z_subs = self.xp.exp(1j * omega * self.time_step)
-
-        # FFT-based computation (default): apply H_cl in frequency domain
-        if not time_domain:
-            """
-            Perform a wrapped FFT-based computation of the closed-loop output. In the sense that you assume the window of the predicted signal is actually the
-            window of a periodic signal, so you can use FFT directly without edge effects. This is reliable if the response is much shorter than the window length
-            """
-
-            subs = {g: gain, z: z_subs}
-            H_cl = self.H_cl.subs(subs)
-            # Clean up any NaN/Inf
-            H_cl = self.xp.nan_to_num(H_cl, nan=0.0, posinf=0.0, neginf=0.0)
-
-            # Apply transfer function to predicted signal in frequency domain
-            predicted_signal_fft = self.xp.fft.fft(predicted_signal)
-            output_fft = H_cl * predicted_signal_fft
-
-            # Convert back to time domain
-            y = self.xp.real(self.xp.fft.ifft(output_fft))
-
-            # Compute cost as squared sum of output signal
-            total_variance = self.xp.sum(y**2)
-            return total_variance
-
-        # Time-domain computation: build H_cl as rational transfer function and use lfilter
-        # R(z) = B(z^-1) / A(z^-1) where arrays are in ascending z^-1 powers (b0 + b1 z^-1 + ...)
-        # H_cl(z) = S(z) / (1 + S(z) R(z) D(z))
-        # With S = z^-sensor_delay, D = z^-actuator_delay and R = B/A:
-        # H_cl = A * z^-sensor_delay / (A + z^-total_delay * B)
 
         A = self.xp.array(self.A.subs(g, gain), dtype=self.dtype)
         B = self.xp.array(self.B.subs(g, gain), dtype=self.dtype)
         C = self.xp.array(self.C.subs(g, gain), dtype=self.dtype)
-        D = self.xp.array(self.D.subs(g, gain), dtype=self.dtype)
 
-        # A = self._A_func(gain)
-        # B = self._B_func(gain)
-        # C = self._C_func(gain)
-        # D = self._D_func(gain)
+        A_T = self.xp.array(self.A_T.subs(g, gain), dtype=self.dtype)
+        B_T = self.xp.array(self.B_T.subs(g, gain), dtype=self.dtype)
+        C_T = self.xp.array(self.C_T.subs(g, gain), dtype=self.dtype)
+        D_T = self.dtype(self.D_T.subs(g, gain))
 
-        x = self.x.copy()
-        # x = self.xp.zeros((A.shape[0], predicted_signal.shape[1]), dtype=self.dtype) #state, prediction horizon
-        # print(x.shape);exit()
-        y_td = self.xp.zeros((n_points, self.n_realizations), dtype=self.dtype) #time, realizations
+        n_points = predicted_signal.shape[1]
 
-        
-        for t in range(n_points):
+        if noise_sequence_unit is None:
+            noise_sequence_unit = self.xp.random.randn(self.n_realizations, n_points).astype(self.dtype)
+
+        x = self.xp.zeros((A.shape[0], self.n_realizations), dtype=self.dtype)
+        x_n = self.xp.zeros((A_T.shape[0], self.n_realizations), dtype=self.dtype)
+
+        cost_tracking = self.dtype(0.0)
+        cost_noise = self.dtype(0.0)
+        y = self.xp.zeros((self.n_realizations, n_points), dtype=self.dtype)    
+        y_n = self.xp.zeros((self.n_realizations, n_points), dtype=self.dtype)
+
+        for k in range(n_points):
             for j in range(self.n_realizations):
-                x[:, j:j+1] = A @ x[:, j:j+1] + B * predicted_signal[j:j+1,t:t+1]
-                y_td[t, j] = (C @ x[:, j:j+1] + D * predicted_signal[j:j+1,t:t+1])
+                u = predicted_signal[j, k]
+                y[j, k] = (C @ x[:, j:j+1])[0, 0]
+                # cost_tracking += y[j, k]**2
+                x[:, j:j+1] = A @ x[:, j:j+1] + B * u
+
+                noise_input = noise_sequence_unit[j, k] * self.noise_variance
+                y_n[j, k] = (C_T @ x_n[:, j:j+1])[0, 0] + D_T * noise_input
+                # cost_noise += y_n[j, k]**2
+                x_n[:, j:j+1] = A_T @ x_n[:, j:j+1] + B_T * noise_input
+
+        if self.plot_debug:
+            plt.figure(figsize=(10, 4))
+            plt.plot(y_n[0, :], label="System output (signal + noise)")
+            plt.ylim([-500, 500])
+            plt.xlabel("Time step")
+            plt.ylabel("Output")
+            plt.title(f"System response to predicted signal and noise (gain={gain:.4f})")
+            plt.grid(True)
+            plt.legend(loc="upper right", fontsize="small")
+            plt.tight_layout()
+            plt.show()
         
+        #define the cost 
+        y_tot = y + y_n
+        steady_state_interval = slice(n_points//2, n_points)  # Consider only the second half of the prediction horizon for cost evaluation
+        cost_tracking = self.xp.mean(y_tot[:,steady_state_interval]**2)
 
-
-        self.x = x.copy()
-
-        return 1/self.n_realizations * self.xp.linalg.norm(y_td)
+        rho = self.dtype(self.rho)
+        return cost_tracking + rho * gain**2
 
         
     def _calculate_max_gains(self):
@@ -694,7 +652,7 @@ class GainOptimizerTemp(BaseProcessingObj):
                     gain_vec = self.xp.broadcast_to(gain_vec, (self.nmodes,)).astype(self.dtype)
             
             # gain_vec = self.xp.array([0.3])
-            self.iir_filter_data.set_gain(gain_vec)
+            self.iir_filter_data.set_gain(gain_vec) 
             # print(gain_vec.shape);exit()
             # self.iir_filter_data.set_gain([0.7])
         
