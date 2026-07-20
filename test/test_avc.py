@@ -102,9 +102,13 @@ class TestAVC(unittest.TestCase):
 
         self.assertEqual(avc.outputs['out_comm'].value.shape, (n_avc,))
         self.assertEqual(avc.outputs['out_freq'].value.shape, (n_avc,))
+        self.assertEqual(avc.outputs['out_state'].value.shape, (n_avc, 4))
         # Initial correction is zero (x3 = x4 = 0 at init)
         np.testing.assert_allclose(cpuArray(avc.outputs['out_comm'].value), np.zeros(n_avc))
         np.testing.assert_allclose(cpuArray(avc.outputs['out_freq'].value), np.zeros(n_avc))
+        # out_state is only populated after the first trigger (diagnostic
+        # output, not part of the constructor's initial condition)
+        np.testing.assert_allclose(cpuArray(avc.outputs['out_state'].value), np.zeros((n_avc, 4)))
 
     @cpu_and_gpu
     def test_invalid_n_avc_raises(self, target_device_idx, xp):
@@ -218,9 +222,11 @@ class TestAVC(unittest.TestCase):
             for i in range(n_avc)
         ]
         ref_out = np.zeros((n_iter, n_avc))
+        ref_state = np.zeros((n_iter, n_avc, 4))
         for it in range(n_iter):
             for i in range(n_avc):
                 ref_out[it, i] = _reference_avc_step(ref_states[i], measurements[it, i])
+                ref_state[it, i, :] = ref_states[i]['x']
 
         # SPECULA object
         simul_params = SimulParams(time_step=T, total_time=T * n_iter)
@@ -234,6 +240,7 @@ class TestAVC(unittest.TestCase):
         avc.setup()
 
         spec_out = np.zeros((n_iter, n_avc))
+        spec_state = np.zeros((n_iter, n_avc, 4))
         for it in range(n_iter):
             t = avc.seconds_to_t((it + 1) * T)
             meas.value[:] = xp.asarray(measurements[it, :])
@@ -242,8 +249,15 @@ class TestAVC(unittest.TestCase):
             avc.trigger()
             avc.post_trigger()
             spec_out[it, :] = cpuArray(avc.outputs['out_comm'].value)
+            spec_state[it, :, :] = cpuArray(avc.outputs['out_state'].value)
 
         np.testing.assert_allclose(spec_out, ref_out, rtol=1e-6, atol=1e-9)
+
+        # out_state must match the reference's internal x = (x1,x2,x3,x4)
+        # trajectory (after this iteration's update), for every AVC
+        # instance and every iteration -- this is the diagnostic output
+        # used to investigate the plant-estimate (x1,x2) stability.
+        np.testing.assert_allclose(spec_state, ref_state, rtol=1e-6, atol=1e-9)
 
     @cpu_and_gpu
     def test_frequency_tracking_converges_on_pure_tone(self, target_device_idx, xp):
