@@ -27,27 +27,6 @@ class AVC(BaseProcessingObj):
     corrections can be summed back onto the relevant mode with a downstream
     combiner object (e.g. :py:class:`~specula.processing_objects.linear_combination.LinearCombination`).
 
-    Algorithm (per AVC element, at loop iteration k)
-    --------------------------------------------------
-    Given the current internal state **x** = (x1, x2, x3, x4), phase
-    estimate alpha[k], (angular) frequency estimate omega[k] and current
-    correction u[k] (all computed at the previous iteration):
-
-    1. **Apply correction**: ``out_comm[k] = u[k]`` (Step 1 of the HRTC
-       process: the correction computed at the previous iteration is
-       output first, ready to be added to the loop command).
-    2. **Update**: given the new measurement y[k], compute the regressor
-       ``W(alpha)``, the prediction error, update **x**, the frequency
-       omega, the phase alpha (with Kahan-compensated summation, matching
-       ``AVC.alpha_c`` in the Matlab code) and the correction u[k+1] ready
-       for the next iteration.
-
-    This closely follows the actual Matlab implementation (``updateAVC.m``)
-    rather than the idealized equations in the reference document: notably
-    the tuning constant ``c`` only multiplies the update of x1, x2 (not
-    x3, x4), and the phase update uses compensated (Kahan-Babuska)
-    summation via the extra ``alpha_c`` state.
-
     Parameters
     ----------
     simul_params : SimulParams
@@ -130,6 +109,45 @@ class AVC(BaseProcessingObj):
         ``avc_full_demo/avc_observability_check.py`` for the full
         analysis. Default ``True`` preserves exact original behaviour
         (and the ``test_matches_matlab_reference_implementation`` check).
+    exact_gradient : {False, True, 'plant', 'full', 'none'}, optional
+        Selects which state components get the dropped chain-rule term
+        added back to their update direction. The regressor ``W`` depends
+        on ``theta``, and ``theta`` depends on ``x`` through eq. 11, so the
+        true error derivative is
+        ``de/dx_i = W_i + sum_j (dW_j/dx_i) x_j``; the paper (eq. 10) and
+        ``updateAVC.m`` keep only ``W_i`` and drop the second term. The
+        exact term is added back analytically as
+        ``g = W + J^T x``, ``J[j,i] = dW_j/dx_i``.
+
+        - ``False`` / ``'none'`` (default): pseudo-gradient on all four
+          components -- exact original behaviour (and what the
+          MATLAB-reference test checks).
+        - ``True`` / ``'full'``: exact gradient on all four. This removes
+          the plant drift, but it also rewrites the *disturbance* update
+          ``x3, x4`` -- and there the pseudo-gradient's ``x3 -= gx*T*cos*e``
+          is doing the useful work (integral action on the residual, the
+          thing that ramps the correction up until the tone cancels). The
+          exact version turns that into equation-error minimisation whose
+          trivial solution is ``x3 = x4 = 0`` (no correction), so the plant
+          is pinned but cancellation is lost. Diagnostic only.
+        - ``'plant'`` (**recommended for online plant adaptation**): exact
+          gradient on ``x1, x2`` only, pseudo-gradient on ``x3, x4``. Keeps
+          the integral cancellation action while giving the plant estimate
+          the true (non-runaway) descent direction. With ``adapt_plant=True``
+          and a *damped* plant step (small ``c`` -- the plant update carries
+          a ``(|theta|^2 + 1)`` gain, so it needs ``gx*T*(|theta|^2+1)*c <~ 2``
+          for stability; e.g. ``c=0.1`` at ``gx=3``), the plant makes a
+          small bounded, settling excursion around its calibrated seed
+          rather than wandering (pseudo) or collapsing (full), and
+          cancellation is as good as or better than a frozen plant
+          (demo: 47 Hz residual ~2 nm vs. ~13 nm frozen). Note this still
+          does not *identify* the plant (unobservable from one tone) -- it
+          self-optimises the cancellation point near the seed.
+
+        Neither ``True`` nor ``'plant'`` makes the plant observable from a
+        single tone (``g`` is still confined to the same 2-D per-cycle
+        subspace). See ``avc_full_demo/avc_chainrule_check.py`` and
+        ``README.md``.
     target_device_idx : int, optional
     precision : int, optional
 
@@ -177,6 +195,7 @@ class AVC(BaseProcessingObj):
                  theta_min_energy: float = 1e-2,
                  soft_clamp: bool = False,
                  adapt_plant: bool = True,
+                 exact_gradient=False,
                  target_device_idx=None,
                  precision=None
                 ):
@@ -189,6 +208,27 @@ class AVC(BaseProcessingObj):
         self._theta_min_energy = theta_min_energy
         self._soft_clamp = bool(soft_clamp)
         self._adapt_plant = bool(adapt_plant)
+
+        # exact_gradient selects which state components get the chain-rule
+        # correction term added to their update direction:
+        #   False / 'none'  -> pseudo-gradient on all (paper default)
+        #   True  / 'full'  -> exact gradient on all 4 components
+        #   'plant'         -> exact on x1,x2 (plant) only, pseudo on x3,x4
+        #                      (the hybrid: kill the plant drift but keep the
+        #                       integral cancellation action on x3,x4)
+        if exact_gradient is False or exact_gradient is None or \
+                (isinstance(exact_gradient, str) and exact_gradient.lower() in ('none', 'off', 'false')):
+            self._exact_plant, self._exact_dist = False, False
+        elif exact_gradient is True or \
+                (isinstance(exact_gradient, str) and exact_gradient.lower() in ('full', 'all', 'true')):
+            self._exact_plant, self._exact_dist = True, True
+        elif isinstance(exact_gradient, str) and exact_gradient.lower() == 'plant':
+            self._exact_plant, self._exact_dist = True, False
+        else:
+            raise ValueError(
+                "exact_gradient must be False, True, 'plant', 'full' or 'none', "
+                f"got {exact_gradient!r}")
+        self._exact_gradient = self._exact_plant or self._exact_dist
 
         # Tuning parameters (constant for the object lifetime), broadcast
         # to n_avc elements if given as scalars.
@@ -326,14 +366,53 @@ class AVC(BaseProcessingObj):
         # prediction error: t = W.x - measurement
         err = self._measurement - (w1 * x1 + w2 * x2 + w3 * x3 + w4 * x4)
 
+        # Update direction. The paper (eq. 10) descends along W, treating W
+        # as independent of x. With exact_gradient we add back the dropped
+        # chain-rule term so the direction is the true gradient of the
+        # squared error, g = W + J^T x with J[j,i] = dW_j/dx_i (through
+        # theta). Computed analytically; verified against finite
+        # differences in avc_full_demo/avc_chainrule_check.py.
+        if self._exact_gradient:
+            A = x1 * cos_a - x2 * sin_a
+            B = x1 * sin_a + x2 * cos_a
+            inv_sd = 1.0 / safe_denom
+            # d(theta_c)/dx_i and d(theta_s)/dx_i, using theta = N / safe_denom
+            dtc1 = (-x3 - 2.0 * x1 * thetac) * inv_sd
+            dtc2 = ( x4 - 2.0 * x2 * thetac) * inv_sd
+            dtc3 = -x1 * inv_sd
+            dtc4 =  x2 * inv_sd
+            dts1 = (-x4 - 2.0 * x1 * thetas) * inv_sd
+            dts2 = (-x3 - 2.0 * x2 * thetas) * inv_sd
+            dts3 = -x2 * inv_sd
+            dts4 = -x1 * inv_sd
+            cr1 = A * dtc1 + B * dts1
+            cr2 = A * dtc2 + B * dts2
+            cr3 = A * dtc3 + B * dts3
+            cr4 = A * dtc4 + B * dts4
+            if not self._soft_clamp:
+                # where the hard clamp froze theta to (1, 0), its gradient
+                # is zero, so the chain-rule term vanishes there
+                cr1 = xp.where(small, 0.0, cr1)
+                cr2 = xp.where(small, 0.0, cr2)
+                cr3 = xp.where(small, 0.0, cr3)
+                cr4 = xp.where(small, 0.0, cr4)
+            # apply the correction selectively: plant axes (x1,x2) if
+            # _exact_plant, disturbance axes (x3,x4) if _exact_dist
+            g1 = w1 + cr1 if self._exact_plant else w1
+            g2 = w2 + cr2 if self._exact_plant else w2
+            g3 = w3 + cr3 if self._exact_dist else w3
+            g4 = w4 + cr4 if self._exact_dist else w4
+        else:
+            g1, g2, g3, g4 = w1, w2, w3, w4
+
         # plant-estimate update gain: normally gx, but 0 when adapt_plant
         # is off, which freezes x1, x2 at their calibrated x0, x1 (the
         # unobservable plant axes -- see class docstring)
         gx_plant = self._gx if self._adapt_plant else self._gx * 0.0
-        new_x1 = x1 - gx_plant * self._T * w1 * (-err) * self._c
-        new_x2 = x2 - gx_plant * self._T * w2 * (-err) * self._c
-        new_x3 = x3 - self._gx * self._T * w3 * (-err)
-        new_x4 = x4 - self._gx * self._T * w4 * (-err)
+        new_x1 = x1 - gx_plant * self._T * g1 * (-err) * self._c
+        new_x2 = x2 - gx_plant * self._T * g2 * (-err) * self._c
+        new_x3 = x3 - self._gx * self._T * g3 * (-err)
+        new_x4 = x4 - self._gx * self._T * g4 * (-err)
         self._x[:, 0] = new_x1
         self._x[:, 1] = new_x2
         self._x[:, 2] = new_x3
