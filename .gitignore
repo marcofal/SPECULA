@@ -149,3 +149,4 @@ ConvolutionKernel*
 # Personal scratch folder, not part of the repo
 /avc_full_demo/
 
+specula/lib/.vscode/settings.json
