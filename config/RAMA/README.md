@@ -24,17 +24,54 @@ Everything below comes from `parameter_files/parameterFile_ramatwin.py`.
 | `calib_rama_rec.yml` | override: KL interaction matrix + reconstructor |
 | `validate_against_oopao.py` | drives both codes with the same DM commands and compares the pyramid frames |
 
-## How to run
+## Where the input data comes from
 
-`make_rama_calib.py` needs `IF_97.npy` from the RAMA data set
-(<https://nuage.osupytheas.fr/s/YRbHrHSQA9ZSiQP>, also in `ramatwin-install-*/data/`):
+The only external input is `IF_97.npy`, the 128x128x97 cube of measured ALPAO
+DM97 influence functions (12.7 MB). It is **not** in this repository -- it is
+part of the RAMA data set, and it lives in two places:
+
+* the `ramatwin` install tarball, under `ramatwin-install-<date>/data/`
+  (alongside `I2M.fits`)
+* the RAMA data share: <https://nuage.osupytheas.fr/s/YRbHrHSQA9ZSiQP>
+
+Extract it once to a permanent location outside the repositories, e.g.
 
 ```bash
-python config/RAMA/make_rama_calib.py --if-file /path/to/IF_97.npy
+mkdir -p ~/Documents/Repos/rama_data
+tar xzf ~/Downloads/ramatwin-install-<date>.tar.gz \
+    -C ~/Documents/Repos/rama_data --strip-components=2 \
+    'ramatwin-install-<date>/data/'
+```
+
+Do not leave it in a temporary directory: everything under `calib/` is
+regenerated from it, and `calib/` is gitignored, so this file is the only thing
+standing between a fresh clone and a working model.
+
+## How to run
+
+Four commands, from the repository root:
+
+```bash
+python config/RAMA/make_rama_calib.py --if-file ~/Documents/Repos/rama_data/IF_97.npy
 specula config/RAMA/params_rama.yml config/RAMA/calib_rama_pupdata.yml
 specula config/RAMA/params_rama.yml config/RAMA/calib_rama_rec.yml
 specula config/RAMA/params_rama.yml
 ```
+
+What each step writes into `calib/`:
+
+| step | product | tag |
+|---|---|---|
+| `make_rama_calib.py` | `ifunc/rama_dm97_72p.fits` | DM97 influence functions |
+| | `m2c/rama_kl_90.fits` | KL modal basis |
+| | `pupilstop/rama_pupil_calib_72p.fits` | calibration pupil |
+| | `pupilstop/rama_pupil_sky_72p.fits` | on-sky pupil |
+| `calib_rama_pupdata.yml` | `pupils/rama_pupdata.fits` | the 4 pyramid pupils |
+| `calib_rama_rec.yml` | `im/rama_im.fits`, `rec/rama_rec.fits` | interaction matrix, reconstructor |
+
+The steps are ordered: the interaction matrix needs the pupil data, which needs
+the influence functions. Re-run `make_rama_calib.py` and then both calibration
+steps whenever you change a mis-registration, the pupil, or the modal basis.
 
 The last command closes the loop for 500 iterations and reaches SR ~0.92 at
 1550 nm for the nominal r0 = 0.10 m.
