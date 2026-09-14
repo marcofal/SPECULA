@@ -1,0 +1,200 @@
+---
+# RAMA / "ramatwin" numerical twin, ported from OOPAO
+#   OOPAO/tutorials/RAMA/parameter_files/parameterFile_ramatwin.py
+#   OOPAO/tutorials/RAMA/compute_ramatwin.py
+#
+# The calibration products (DM influence functions, KL basis, pupil masks) are
+# produced by make_rama_calib.py -- run it once before this file.
+#
+# Calibration order:
+#   specula params_rama.yml calib_rama_pupdata.yml
+#   specula params_rama.yml calib_rama_rec.yml
+#   specula params_rama.yml
+
+
+main:
+  class:             'SimulParams'
+  root_dir:          './calib/'             # Root directory for calibration manager
+  pixel_pupil:       72                     # 36 subaps x 2 px/subap (OOPAO 'resolution')
+  pixel_pitch:       0.008333333            # [m] 0.6 m / 72 px
+  total_time:        0.500                  # [s] 500 iterations, as in ramatwin.py
+  time_step:         0.001                  # [s] OOPAO 'samplingTime'
+
+
+# --------------------------------------------------------------------------
+# Atmosphere:  r0 = 0.10 m @500nm  ->  seeing = 0.9759*0.5/(r0*4.848) arcsec
+# (ramatwin.py overrides r0 to 0.05 m before the closed loop, i.e. seeing 2.013")
+# --------------------------------------------------------------------------
+seeing:
+  class:             'WaveGenerator'
+  constant:          1.0065                 # ["] seeing, equivalent to r0 = 0.10 m
+
+
+wind_speed:
+  class:             'WaveGenerator'
+  constant:          [5., 4., 8., 10., 2.]  # [m/s]
+
+
+wind_direction:
+  class:             'WaveGenerator'
+  constant:          [0., 72., 144., 216., 288.]   # [degrees]
+
+
+# --------------------------------------------------------------------------
+# Sources.  OOPAO builds two of them:
+#   ngs -> 'opticalBandCalib' = R  (640 nm), the light that feeds the pyramid
+#   src -> 'opticalBand'      = J2 (1550 nm), the science/imaging path
+# zero_point reproduces the OOPAO photometric zero point over the given
+# detector bandwidth (see make_rama_calib.py, zero_point_for_specula()).
+# --------------------------------------------------------------------------
+ngs_source:
+  class:             'Source'
+  polar_coordinates: [0.0, 0.0]             # [arcsec, degrees]
+  magnitude:         -0.04
+  wavelengthInNm:    640                    # R band
+  zero_point:        2.25631e-08            # matches OOPAO R zero point, bandw = 150 nm
+
+
+science_source:
+  class:             'Source'
+  polar_coordinates: [0.0, 0.0]             # [arcsec, degrees]
+  magnitude:         -0.04
+  wavelengthInNm:    1550                   # J2 band
+  zero_point:        1.99713e-09            # matches OOPAO J2 zero point, bandw = 260 nm
+
+
+# Calibration pupil (clear disk), as used by ramatwin.py:
+#   Ramatwin.set_pupil(calibration=True)
+# For the on-sky pupil (0.34 central obstruction + 4 spiders) use instead:
+#   tag: 'rama_pupil_sky_72p'
+pupilstop:
+  class:             'Pupilstop'
+  tag:               'rama_pupil_calib_72p'
+
+
+atmo:
+  class:                'AtmoEvolution'
+  simul_params_ref:     'main'
+  L0:                   30                                   # [m] outer scale
+  heights:              [0., 1000., 5000., 10000., 12000.]   # [m]
+  Cn2:                  [0.45, 0.10, 0.10, 0.25, 0.10]       # OOPAO 'fractionnalR0'
+  fov:                  0.0
+  seed:                 10                                   # ramatwin.py: seed = 10
+  inputs:
+    seeing: 'seeing.output'
+    wind_speed: 'wind_speed.output'
+    wind_direction: 'wind_direction.output'
+  outputs: ['layer_list']
+
+
+prop:
+  class:                'AtmoPropagation'
+  simul_params_ref:     'main'
+  source_dict_ref:      ['ngs_source', 'science_source']
+  inputs:
+    atmo_layer_list: ['atmo.layer_list']
+    common_layer_list: ['pupilstop',
+                        'dm.out_layer:-1']
+  outputs: ['out_ngs_source_ef', 'out_science_source_ef']
+
+
+# --------------------------------------------------------------------------
+# Pyramid WFS.  OOPAO detector geometry:
+#   pupil                        = 36 px  ('nSubaperture')
+#   gap between pupil footprints = 16 px  ('n_pix_separation')
+#   edge                         = 16 px  ('n_pix_edge')
+#   full frame                   = 2*36 + 16 + 2*16 = 120 px
+# so pup_dist (centre-to-centre) = 36 + 16 = 52 px.
+# fov = 16" is the natural (unvignetted) field for this grid at 640 nm: any
+# smaller value makes SPECULA insert a focal-plane stop that OOPAO does not have.
+# --------------------------------------------------------------------------
+pyramid:
+  class:             'ModulatedPyramid'
+  simul_params_ref:  'main'
+  pup_diam:          36.                    # pupil diameter [CCD pixels]
+  pup_dist:          52.                    # pupil centre distance [CCD pixels]
+  fov:               16.0                   # [arcsec]
+  mod_amp:           0.0                    # OOPAO 'modulation' = 0 (static pyramid)
+  output_resolution: 120                    # 2*60, OOPAO 'size_quadrant_ramatwin' = 60
+  wavelengthInNm:    640                    # WFS works on the R-band calibration source
+  inputs:
+    in_ef: 'prop.out_ngs_source_ef'
+
+
+detector:
+  class:             'CCD'
+  simul_params_ref:  'main'
+  size:              [120, 120]
+  dt:                0.001                  # [s]
+  bandw:             150                    # [nm] R band width (OOPAO photometry)
+  photon_noise:      True                   # ramatwin.py: wfs.cam.photonNoise = True
+  readout_noise:     False
+  quantum_eff:       1.0                    # OOPAO applies no QE
+  inputs:
+    in_i: 'pyramid.out_i'
+
+
+# OOPAO 'postProcessing' = 'fullFrame_sum_flux': the signal is the whole set of
+# valid pixels normalised by the total flux -> slopes_from_intensity in SPECULA.
+slopec:
+  class:             'PyrSlopec'
+  pupdata_object:    'rama_pupdata'
+  slopes_from_intensity: True
+  inputs:
+    in_pixels:       'detector.out_pixels'
+  outputs: ['out_slopes']
+
+
+rec:
+  class:              'Modalrec'
+  recmat_object:      'rama_rec'
+  inputs:
+    in_slopes:        'slopec.out_slopes'
+  outputs: ['out_modes']
+
+
+control:
+  class:             'Integrator'
+  delay:             2                      # ramatwin.py: frame_delay = 2
+  int_gain:          [0.4]                  # ramatwin.py: gainCL = 0.4
+  n_modes:           [83]                   # ramatwin.py: end_mode = 83
+  inputs:
+      delta_comm: 'rec.out_modes'
+
+
+# ALPAO DM97: measured influence functions, resampled on the 72 px grid with
+# the RAMA mis-registration already baked in (see make_rama_calib.py).
+# Commands are in native DM units (1 unit ~ 7.1 um of OPD at the actuator).
+dm:
+  class:             'DM'
+  simul_params_ref:  'main'
+  ifunc_object:      'rama_dm97_72p'
+  m2c_object:        'rama_kl_90'           # KL basis from the IFs + atmo statistics
+  nmodes:            83
+  sign:              -1                     # OOPAO 'dm_inf_funct_factor'
+  height:            0
+  inputs:
+      in_command: 'control.out_comm'
+
+
+psf:
+  class:             'PSF'
+  simul_params_ref:  'main'
+  wavelengthInNm:    1550                   # J2 science wavelength
+  nd:                8
+  start_time:        0.05
+  inputs:
+      in_ef:  'prop.out_science_source_ef'
+  outputs: ['out_psf', 'out_sr']
+
+
+data_store:
+  class:             'DataStore'
+  store_dir:         './output'
+  inputs:
+    input_list: ['res_ef-prop.out_ngs_source_ef',
+                 'ccd-detector.out_pixels',
+                 'slopes-slopec.out_slopes',
+                 'delta_comm-rec.out_modes',
+                 'comm-control.out_comm',
+                 'sr-psf.out_sr']

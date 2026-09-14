@@ -1,0 +1,58 @@
+---
+# Step 2 of the RAMA calibration: KL interaction matrix and reconstructor.
+#   specula params_rama.yml calib_rama_rec.yml
+# Produces  calib/im/rama_im.fits  and  calib/rec/rama_rec.fits
+#
+# OOPAO equivalent (ramatwin.py):
+#   InteractionMatrix(ngs, atm, tel, dm, wfs, M2C=M2C, stroke=1e-9)
+#   calib_CL = CalibrationVault(calib_dm_97.D[:, :end_mode])
+#
+# The KL modes written by make_rama_calib.py are normalised to 1 nm rms of
+# wavefront per unit coefficient, so amp is directly the OOPAO stroke (1e-9 m).
+
+pushpull:
+  class:             'PushPullGenerator'
+  nmodes:            83
+  amp:               1.0                    # [nm rms] = OOPAO stroke = 1e-9 m
+  constant_amp:      True                   # same stroke on every mode, as OOPAO does
+  outputs: ['output']
+
+main_override:
+  total_time:        0.166                  # 2 x 83 push-pull steps
+
+prop_override:
+  inputs:
+    common_layer_list: ['pupilstop',
+                        'dm.out_layer']
+
+dm_override:
+  sign:              1
+  inputs:
+      in_command: 'pushpull.output'
+
+pyramid_override:
+  mod_amp:           1.0                    # ramatwin.py calibrates with modulation = 1
+
+detector_override:
+  photon_noise:      False
+  readout_noise:     False
+
+im_calibrator:
+  class:             'ImCalibrator'
+  nmodes:            83
+  im_tag:            'rama_im'
+  overwrite:         True
+  inputs:
+    in_slopes:       'slopec.out_slopes'
+    in_commands:     'pushpull.output'
+  outputs: ['out_intmat']
+
+rec_calibrator:
+  class:             'RecCalibrator'
+  nmodes:            83
+  rec_tag:           'rama_rec'
+  overwrite:         True
+  inputs:
+    in_intmat:       'im_calibrator.out_intmat'
+
+remove: ['atmo', 'rec', 'control', 'psf', 'data_store']

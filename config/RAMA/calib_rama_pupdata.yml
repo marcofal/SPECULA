@@ -1,0 +1,29 @@
+---
+# Step 1 of the RAMA calibration: locate the 4 pyramid pupils on the detector.
+#   specula params_rama.yml calib_rama_pupdata.yml
+# Produces  calib/pupils/rama_pupdata.fits
+#
+# The pupils are found on a flat wavefront; modulation is raised (as in the
+# standard SPECULA SCAO calibration) to get a uniformly illuminated footprint,
+# the science loop then runs unmodulated.
+
+pyr_pupdata:
+  class:             'PyrPupdataCalibrator'
+  thr1:              0.1
+  thr2:              0.25
+  output_tag:        'rama_pupdata'
+  overwrite:         True
+  inputs:
+    in_i: 'pyramid.out_i'
+
+pyramid_override:
+  mod_amp:           5.0                    # [lambda/D] only for the pupil search
+
+prop_override:
+  inputs:
+    common_layer_list: ['pupilstop']
+
+main_override:
+  total_time:        0.001
+
+remove: ['atmo', 'slopec', 'rec', 'control', 'dm', 'psf', 'data_store']
