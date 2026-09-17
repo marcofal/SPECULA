@@ -65,7 +65,22 @@ class DataDrivenLqg(BaseFilter):
         Dither seed.
     log_file : str, optional
         JSON file with the design events of every LQG mode, written at the end.
+
+    Outputs
+    -------
+    out_comm, out_comm_no_delay : as BaseFilter
+    out_dither : dither added to each mode (zero for integrator modes)
+    out_design : (len(lqg_modes), 8 + n_g) design state of each LQG mode, updated
+        every frame, one row per LQG mode; columns in DESIGN_COLUMNS:
+        active (1 LQG, 0 integrator), predicted residual std, Kalman noise
+        r_kalman, penalty rho, plant relative std at the last redesign,
+        accepted / rejected / reverted counters, then the taps g_1..g_n_g of
+        the active design (NaN where there is none). Store it with DataStore to
+        keep the design history in the run folder.
     """
+
+    DESIGN_COLUMNS = ['active', 'pred_std', 'r_kalman', 'rho', 'plant_rel_std',
+                      'n_accepted', 'n_rejected', 'n_reverted']  # then g_1 .. g_n_g
 
     def __init__(self,
                  simul_params: SimulParams,
@@ -138,6 +153,12 @@ class DataDrivenLqg(BaseFilter):
                                     target_device_idx=target_device_idx, precision=precision)
         self.outputs['out_dither'] = self.out_dither
 
+        self._design = np.full((n_lqg, len(self.DESIGN_COLUMNS) + int(n_g)), np.nan)
+        self._design[:, [0, 5, 6, 7]] = 0.0
+        self.out_design = BaseValue(value=self.xp.asarray(self._design, dtype=self.dtype),
+                                    target_device_idx=target_device_idx, precision=precision)
+        self.outputs['out_design'] = self.out_design
+
     @staticmethod
     def _per_mode(value, n, name):
         arr = np.atleast_1d(np.asarray(value, dtype=float))
@@ -154,7 +175,8 @@ class DataDrivenLqg(BaseFilter):
     @classmethod
     def output_names(cls):
         result = super().output_names()
-        result.update({'out_dither': OutputDesc(BaseValue, 'Dither added to the commands of the LQG modes')})
+        result.update({'out_dither': OutputDesc(BaseValue, 'Dither added to the commands of the LQG modes'),
+                       'out_design': OutputDesc(BaseValue, 'Design state per LQG mode (see DESIGN_COLUMNS)')})
         return result
 
     def trigger_code(self):
@@ -174,10 +196,15 @@ class DataDrivenLqg(BaseFilter):
         self.output_buffer[:, 0] = self.to_xp(self._u, dtype=self.dtype)
         self.out_dither.value[:] = self.to_xp(dither, dtype=self.dtype)
         self.out_dither.generation_time = self.current_time
+        self.out_design.value = self.to_xp(self._design, dtype=self.dtype)
+        self.out_design.generation_time = self.current_time
 
     def _log_new_events(self, i):
         ctrl = self.mode_ctrl[i]
-        for k, event, info in ctrl.log[self._n_events[i]:]:
+        new = ctrl.log[self._n_events[i]:]
+        if new:
+            self._update_design_row(i, new)
+        for k, event, info in new:
             brief = {key: (round(v, 4) if isinstance(v, float) else v) for key, v in info.items()
                      if key in ('plant_rel_std', 'pred_std', 'rho', 'r_kalman', 'to', 'reason')}
             g = info.get('g')
@@ -185,6 +212,25 @@ class DataDrivenLqg(BaseFilter):
                 brief['g'] = [round(x, 3) for x in g]
             self.logger.info(f"DataDrivenLqg {ctrl.name} frame {k}: {event} {brief}")
         self._n_events[i] = len(ctrl.log)
+
+    def _update_design_row(self, i, new_events):
+        row, ctrl = self._design[i], self.mode_ctrl[i]
+        n_cols = len(self.DESIGN_COLUMNS)
+        for _, event, info in new_events:
+            if 'plant_rel_std' in info:
+                row[4] = info['plant_rel_std']
+            col = {'accepted': 5, 'rejected': 6, 'reverted': 7}.get(event)
+            if col is not None:
+                row[col] += 1
+        d = ctrl.design
+        if d is None:
+            row[0] = 0.0
+            row[1:4] = np.nan
+            row[n_cols:] = np.nan
+        else:
+            row[0] = 1.0
+            row[1:4] = d.predicted_output_std(), d.r_kalman, d.rho
+            row[n_cols:] = d.g
 
     def reset_states(self):
         super().reset_states()

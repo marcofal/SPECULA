@@ -144,6 +144,14 @@ class TestDataDrivenLqgObject(unittest.TestCase):
         self.assertTrue(accepted, f"no design accepted: {ctrl.log}")
         np.testing.assert_allclose(accepted[-1]["g"], [0.0, -1.0, 0.0], atol=0.15)
 
+        # the design output mirrors the event log
+        design = cpuArray(obj.outputs['out_design'].value)
+        cols = DataDrivenLqg.DESIGN_COLUMNS
+        self.assertEqual(design.shape, (1, len(cols) + 3))
+        self.assertEqual(design[0, cols.index('active')], 1.0)
+        self.assertEqual(design[0, cols.index('n_accepted')], len(accepted))
+        np.testing.assert_allclose(design[0, len(cols):], accepted[-1]["g"], atol=1e-5)
+
 
 if __name__ == '__main__':
     unittest.main()
