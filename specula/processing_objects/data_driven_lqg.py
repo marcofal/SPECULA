@@ -1,4 +1,5 @@
 import json
+import os
 
 import numpy as np
 
@@ -6,7 +7,7 @@ from specula import cpuArray
 from specula.base_processing_obj import OutputDesc
 from specula.base_value import BaseValue
 from specula.data_objects.simul_params import SimulParams
-from specula.lib.adaptive_lqg import AdaptiveModeLQG
+from specula.lib.adaptive_lqg import AdaptiveModeFreeTheta, AdaptiveModeLQG
 from specula.processing_objects.base_filter import BaseFilter
 
 
@@ -25,6 +26,15 @@ class DataDrivenLqg(BaseFilter):
     the instrument that makes the plant identifiable in closed loop. Before the
     first accepted design (warm-up, at least `min_samples` frames) the LQG
     modes also run an integrator with gain `warmup_gain`.
+
+    Two identification methods (`method`):
+      'structured'  FIR plant (instrumental variables on the dither) + AR turbulence
+      'free_theta'  output equation y_k = theta^T zeta_k + e_k on buffer filters
+                    (zeta_k = past y and past u, N of each), all 2N entries free,
+                    one sliding-window least-squares fit; new designs accepted on
+                    the measured residual (trial period), so the plant implied by
+                    theta does not need to be right; the dither can be lowered to
+                    `dither_after` once `switch_designs` designs are accepted.
 
     Timing: the command written at frame k is u_k (out_comm_no_delay);
     out_comm is delayed by `delay` frames like any BaseFilter. The identified
@@ -61,6 +71,22 @@ class DataDrivenLqg(BaseFilter):
     supervisor, blowup_factor, fast_window, holdoff
         Revert a design whose fast residual rms exceeds blowup_factor times the
         healthy level; then wait holdoff periods before redesigning.
+    method : str
+        'structured' (default) or 'free_theta'.
+    n_theta : int
+        free_theta: N, number of past y and past u in zeta (2N parameters).
+    theta_window : int, optional
+        free_theta: least-squares window [frames] (default plant_window).
+    dither_after : float, optional
+        free_theta: dither std once `switch_designs` designs are accepted
+        (default dither_std).
+    switch_designs : int
+        free_theta: accepted designs before the dither goes to dither_after.
+    acceptance : str
+        free_theta: 'residual' (trial period, default) or 'model'.
+    accept_ratio, abort_ratio : float
+        free_theta: keep a trial design if its period rms <= accept_ratio times the
+        reference rms; abort it as soon as the fast rms > abort_ratio times it.
     seed : int
         Dither seed.
     log_file : str, optional
@@ -75,7 +101,10 @@ class DataDrivenLqg(BaseFilter):
         active (1 LQG, 0 integrator), predicted residual std, Kalman noise
         r_kalman, penalty rho, plant relative std at the last redesign,
         accepted / rejected / reverted counters, then the taps g_1..g_n_g of
-        the active design (NaN where there is none). Store it with DataStore to
+        the active design (NaN where there is none). With free_theta: r_kalman is
+        the added noise variance s q, plant_rel_std is NaN, n_rejected also counts
+        rejected and aborted trials, and the taps are the first n_g samples of the
+        impulse response of the plant implied by theta. Store it with DataStore to
         keep the design history in the run folder.
     """
 
@@ -106,6 +135,14 @@ class DataDrivenLqg(BaseFilter):
                  blowup_factor: float = 2.0,
                  fast_window: int = 50,
                  holdoff: int = 4,
+                 method: str = 'structured',
+                 n_theta: int = 11,
+                 theta_window: int = None,
+                 dither_after=None,
+                 switch_designs: int = 2,
+                 acceptance: str = 'residual',
+                 accept_ratio: float = 1.05,
+                 abort_ratio: float = 1.5,
                  seed: int = 0,
                  log_file: str = None,
                  target_device_idx: int = None,
@@ -129,20 +166,41 @@ class DataDrivenLqg(BaseFilter):
         noise = self._per_mode(noise_var, n_lqg, 'noise_var')
         self.log_file = log_file
 
+        if method not in ('structured', 'free_theta'):
+            raise ValueError(f"method must be 'structured' or 'free_theta', got {method!r}")
+        self.method = method
+        after = (dither if dither_after is None
+                 else self._per_mode(dither_after, n_lqg, 'dither_after'))
+
         rng = np.random.default_rng(seed)
-        self.mode_ctrl = [
-            AdaptiveModeLQG(dt=simul_params.time_step, n_g=n_g, p=p,
-                            plant_window=plant_window, dist_window=dist_window,
-                            min_samples=min_samples, dither_std=dither[i],
-                            redesign_every=redesign_every, ms_limit_db=ms_limit_db,
-                            gain_range=gain_range, delay_margin=delay_margin,
-                            plant_rel_std_max=plant_rel_std_max, warmup_gain=warmup[i],
-                            noise_var=noise[i], max_radius=max_radius,
-                            supervisor=supervisor, blowup_factor=blowup_factor,
-                            fast_window=fast_window, holdoff=holdoff,
-                            rng=np.random.default_rng(rng.integers(2**32)),
-                            name=f"mode {m}")
-            for i, m in enumerate(self.lqg_modes)]
+        self.mode_ctrl = []
+        for i, m in enumerate(self.lqg_modes):
+            mode_rng = np.random.default_rng(rng.integers(2**32))
+            if method == 'structured':
+                ctrl = AdaptiveModeLQG(dt=simul_params.time_step, n_g=n_g, p=p,
+                                       plant_window=plant_window, dist_window=dist_window,
+                                       min_samples=min_samples, dither_std=dither[i],
+                                       redesign_every=redesign_every, ms_limit_db=ms_limit_db,
+                                       gain_range=gain_range, delay_margin=delay_margin,
+                                       plant_rel_std_max=plant_rel_std_max, warmup_gain=warmup[i],
+                                       noise_var=noise[i], max_radius=max_radius,
+                                       supervisor=supervisor, blowup_factor=blowup_factor,
+                                       fast_window=fast_window, holdoff=holdoff,
+                                       rng=mode_rng, name=f"mode {m}")
+            else:
+                ctrl = AdaptiveModeFreeTheta(dt=simul_params.time_step, N=n_theta,
+                                             window=plant_window if theta_window is None else theta_window,
+                                             min_samples=min_samples, dither_std=dither[i],
+                                             dither_after=after[i], switch_designs=switch_designs,
+                                             redesign_every=redesign_every, ms_limit_db=ms_limit_db,
+                                             gain_range=gain_range, delay_margin=delay_margin,
+                                             warmup_gain=warmup[i], acceptance=acceptance,
+                                             accept_ratio=accept_ratio, abort_ratio=abort_ratio,
+                                             n_taps_log=n_g, max_radius=max_radius,
+                                             supervisor=supervisor,
+                                             blowup_factor=blowup_factor, fast_window=fast_window,
+                                             holdoff=holdoff, rng=mode_rng, name=f"mode {m}")
+            self.mode_ctrl.append(ctrl)
         self._n_events = [0] * n_lqg
 
         self._int_mask = np.ones(self.n_modes, dtype=bool)
@@ -206,7 +264,8 @@ class DataDrivenLqg(BaseFilter):
             self._update_design_row(i, new)
         for k, event, info in new:
             brief = {key: (round(v, 4) if isinstance(v, float) else v) for key, v in info.items()
-                     if key in ('plant_rel_std', 'pred_std', 'rho', 'r_kalman', 'to', 'reason')}
+                     if key in ('plant_rel_std', 'pred_std', 'rho', 'r_kalman', 'to', 'reason',
+                                'trial_rms_ratio', 'after')}
             g = info.get('g')
             if g is not None:
                 brief['g'] = [round(x, 3) for x in g]
@@ -219,7 +278,8 @@ class DataDrivenLqg(BaseFilter):
         for _, event, info in new_events:
             if 'plant_rel_std' in info:
                 row[4] = info['plant_rel_std']
-            col = {'accepted': 5, 'rejected': 6, 'reverted': 7}.get(event)
+            col = {'accepted': 5, 'rejected': 6, 'trial rejected': 6, 'trial aborted': 6,
+                   'reverted': 7}.get(event)
             if col is not None:
                 row[col] += 1
         d = ctrl.design
@@ -242,5 +302,6 @@ class DataDrivenLqg(BaseFilter):
             return
         events = {ctrl.name: [dict(frame=k, event=e, **info) for k, e, info in ctrl.log]
                   for ctrl in self.mode_ctrl}
+        os.makedirs(os.path.dirname(os.path.abspath(self.log_file)), exist_ok=True)
         with open(self.log_file, 'w') as f:
             json.dump(events, f, indent=1, default=float)

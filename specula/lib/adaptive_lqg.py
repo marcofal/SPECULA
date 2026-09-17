@@ -97,6 +97,14 @@ class SlidingWindowRLS:
         self.theta = self.P @ b
         self._since_refresh = 0
 
+    def residual_variance(self, theta=None):
+        """Variance of y - phi^T theta over the window (theta: current estimate by default)."""
+        if not self.buf:
+            return np.nan
+        Phi = np.array([phi for phi, _, _ in self.buf])
+        Y = np.array([y for _, _, y in self.buf])
+        return float(np.var(Y - Phi @ (self.theta if theta is None else theta)))
+
     @property
     def full(self):
         return len(self.buf) >= self.window
@@ -475,5 +483,356 @@ class AdaptiveModeLQG:
             x_f = self.xc + dsg.M[:, 0] * (y - (dsg.C @ self.xc).item())
             self.xc = dsg.A @ x_f + dsg.B[:, 0] * u
         self.raw.append((y, u, r))
+        self.k += 1
+        return u, r
+
+
+# ------------------------------------------------------------------ #
+# Free theta: output equation on buffer filters, no plant structure  #
+# ------------------------------------------------------------------ #
+#
+# y_k = theta^T zeta_k + e_k,  zeta_k = (y_{k-1} .. y_{k-N}, u_{k-1} .. u_{k-N})
+#
+# (the nonminimal realization of Bosso et al. with buffer filters, Lambda = 0).
+# theta is fitted by sliding-window least squares with all 2N entries free; the
+# plant it implies can be far from the true one, because closed-loop data pin it
+# down only through the dither and through controller switching. A new design is
+# therefore judged on the measured residual (acceptance="residual"): it runs on
+# trial for one period, is aborted if the fast residual blows up, and is kept only
+# if the period rms does not get worse. Prototype: RAMA ORforRAMA/adaptive_free_theta.py.
+
+def buffer_model(theta):
+    """Innovations model of y = theta^T zeta + e on buffer filters:
+    zeta+ = A zeta + B u + K e, y = C zeta + e. Returns (A, B, C, K)."""
+    theta = np.asarray(theta, float)
+    n = theta.size
+    N = n // 2
+    F = np.zeros((n, n))
+    F[1:N, :N - 1] = np.eye(N - 1)
+    F[N + 1:, N:n - 1] = np.eye(N - 1)
+    g_y, g_u = np.zeros(n), np.zeros(n)
+    g_y[0], g_u[N] = 1.0, 1.0
+    return F + np.outer(g_y, theta), g_u[:, None], theta[None, :], g_y[:, None]
+
+
+def stabilize_theta(theta, max_radius=0.9995):
+    """Pull the roots of A(q) = 1 - sum theta_y,i q^-i (the denominator shared by
+    plant and disturbance) inside max_radius; theta_u is left unchanged. Closed-loop
+    data can give an unstable A that the loop itself hides (a direction the
+    controller does not excite); no controller then passes the checks on the model.
+    Returns (theta, number of roots moved)."""
+    theta = np.asarray(theta, float).copy()
+    N = theta.size // 2
+    roots = np.roots(np.r_[1.0, -theta[:N]])
+    big = np.abs(roots) > max_radius
+    if np.any(big):
+        roots[big] *= max_radius / np.abs(roots[big])
+        theta[:N] = -np.real(np.poly(roots))[1:]
+    return theta, int(big.sum())
+
+
+def theta_from_fir_ar(g, a, N=None):
+    """theta of the buffer model for y = G(q) u + d, A_d(q) d = e (N >= len(g) + len(a))."""
+    g, a = np.asarray(g, float), np.asarray(a, float)
+    N = len(g) + len(a) if N is None else int(N)
+    c = np.convolve(np.r_[1.0, -a], np.r_[0.0, g])[1:]
+    return np.r_[a, np.zeros(N - len(a)), c, np.zeros(N - len(c))]
+
+
+class ModelLQG:
+    """Kalman (measurement noise inflated by s q) + LQR with a rho (u_k - u_{k-1})^2
+    penalty on the innovations model x+ = A x + B u + K e, y = C x + e (var e = q).
+    The law uses the newest measurement: u_k acts on s_k = (A - L C) x_k + L y_k.
+    With s = 0 the predictor gain is K (the buffers are the observer).
+
+    Controller state xbar = (x_hat, u_{k-1}); one frame, with the applied command u:
+        u_ctrl = Cc xbar + Dc y,   xbar+ = F_bar xbar + L_bar y + Bd u
+    """
+
+    def __init__(self, A, B, C, K, q, rho=0.0, s=0.0):
+        n = A.shape[0]
+        self.A, self.B, self.C, self.K, self.q = A, B, C, K, float(q)
+        self.rho, self.s = float(rho), float(s)
+        self.r_kalman = self.s * self.q                  # added measurement-noise variance
+        if s > 0:
+            W, V, S = q * K @ K.T, np.array([[q * (1.0 + s)]]), q * K
+            P = solve_discrete_are(A.T, C.T, W, V, None, S)
+            L = (A @ P @ C.T + S) / (C @ P @ C.T + V)
+        else:
+            L = K
+        Ad = np.zeros((n + 1, n + 1))
+        Ad[:n, :n] = A
+        Bd = np.r_[B[:, 0], 1.0][:, None]
+        Q = np.zeros((n + 1, n + 1))
+        Q[:n, :n] = C.T @ C
+        Q[n, n] = rho
+        R = np.array([[max(rho, 1e-9)]])
+        Nx = np.zeros((n + 1, 1))
+        Nx[n, 0] = -rho
+        X = solve_discrete_are(Ad, Bd, Q, R, None, Nx)
+        Wg = np.linalg.inv(R + Bd.T @ X @ Bd)
+        K_s, K_x = Wg @ Bd.T @ X, Wg @ Nx.T
+        self.F_bar = np.zeros((n + 1, n + 1))
+        self.F_bar[:n, :n] = A - L @ C
+        self.L_bar = np.r_[L[:, 0], 0.0][:, None]
+        self.Bd = Bd
+        self.Cc = -(K_s @ self.F_bar + K_x)
+        self.Dc = -(K_s @ self.L_bar)
+        self.Ac = self.F_bar + Bd @ self.Cc
+        self.Bc = self.L_bar + Bd @ self.Dc
+        self.g = None                                    # implied taps, set by the owner
+
+    @property
+    def ctrl(self):
+        return self.Ac, self.Bc, self.Cc, self.Dc
+
+    @property
+    def identified_plant(self):
+        return self.A, self.B, self.C
+
+    def predicted_output_std(self):
+        """Stationary std of y predicted by the model in closed loop."""
+        A, B, C, K = self.A, self.B, self.C, self.K
+        Ac, Bc, Cc, Dc = self.ctrl
+        Acl = np.block([[A + B @ Dc @ C, B @ Cc], [Bc @ C, Ac]])
+        if np.abs(np.linalg.eigvals(Acl)).max() >= 1.0:
+            return np.inf
+        Bcl = np.vstack([K + B @ Dc, Bc])
+        Ccl = np.hstack([C, np.zeros((1, Ac.shape[0]))])
+        Sigma = solve_discrete_lyapunov(Acl, self.q * Bcl @ Bcl.T)
+        return float(np.sqrt((Ccl @ Sigma @ Ccl.T).item() + self.q))
+
+
+def tune_model_lqg(theta, q, dt, ms_limit_db=6.0, gain_range=(0.5, 1.5), delay_margin=0.0,
+                   s_grid=(0.0, 0.1, 1.0, 10.0, 100.0, 1e3), rho_grid=(0.0, 1.0, 10.0)):
+    """(s, rho) of ModelLQG on buffer_model(theta) with the smallest predicted std,
+    subject to Ms <= limit and stability for gain x gain_range (and +delay_margin
+    frames), all on the plant implied by theta."""
+    A, B, C, K = buffer_model(theta)
+    plant = (A, B, C)
+    plants = [plant] + ([with_extra_delay(plant, delay_margin)] if delay_margin > 0 else [])
+    gains = np.linspace(*gain_range, 11)
+    best = None
+    for s in s_grid:
+        for rho in rho_grid:
+            try:
+                d = ModelLQG(A, B, C, K, q, rho, s)
+            except (np.linalg.LinAlgError, ValueError):
+                continue
+            if not all(np.abs(np.linalg.eigvals(closed_loop_matrix(pl, d.ctrl, k))).max() < 1
+                       for pl in plants for k in gains):
+                continue
+            if peak_sensitivity_db(plant, d.ctrl, dt) > ms_limit_db:
+                continue
+            std = d.predicted_output_std()
+            if best is None or std < best[0]:
+                best = (std, d)
+    if best is None:
+        raise RuntimeError("no (s, rho) in the grid meets the constraints on the identified plant")
+    return best[1]
+
+
+def implied_taps(theta, n):
+    """First n samples of the impulse response of the plant implied by theta."""
+    A, B, C, _ = buffer_model(theta)
+    x, out = B[:, 0].copy(), []
+    for _ in range(n):
+        out.append(float(C[0] @ x))
+        x = A @ x
+    return np.array(out)
+
+
+class AdaptiveModeFreeTheta:
+    """One modal channel with a free theta. Same interface as AdaptiveModeLQG:
+    step(y_k) -> (u_k, r_k), `log`, `design`, `name`.
+
+    Every frame: sliding-window least squares on (zeta_k, y_k); control with the
+    active ModelLQG; dither r. Every `redesign_every` frames (once `min_samples`
+    are in the window): tune_model_lqg on the current theta, then
+      acceptance="model"     switch to the new design at once
+      acceptance="residual"  run it on trial for one period; abort as soon as the
+                             fast residual rms exceeds abort_ratio times the rms of
+                             the last clean period of the current controller; keep
+                             it at the end of the period only if its rms is at most
+                             accept_ratio times that reference. After an abort or a
+                             rejection the current controller runs one clean period.
+    Before each design the shared denominator of theta is stabilized
+    (stabilize_theta, max_radius), as the AR model of the structured method.
+    Dither: dither_std until `switch_designs` designs are accepted, then
+    dither_after (back to dither_std after a supervisor revert).
+    Before the first accepted design an integrator runs.
+    """
+
+    def __init__(self, dt, N=11, window=4000, min_samples=None, dither_std=5.0,
+                 dither_after=None, switch_designs=2, redesign_every=250, ms_limit_db=6.0,
+                 gain_range=(0.5, 1.5), delay_margin=0.5, warmup_gain=0.4,
+                 acceptance="residual", accept_ratio=1.05, abort_ratio=1.5,
+                 abort_min_frames=20, n_taps_log=3, max_radius=0.9995, supervisor=True, blowup_factor=2.0,
+                 fast_window=50, holdoff=4, rng=None, name=""):
+        if acceptance not in ("model", "residual"):
+            raise ValueError(f"acceptance must be 'model' or 'residual', got {acceptance!r}")
+        self.dt, self.N = float(dt), int(N)
+        self.rls = SlidingWindowRLS(2 * self.N, window)
+        self.min_samples = int(window if min_samples is None else min_samples)
+        self.dither_std = float(dither_std)
+        self.dither_after = self.dither_std if dither_after is None else float(dither_after)
+        self.switch_designs = int(switch_designs)
+        self.dither_level = self.dither_std
+        self.redesign_every = int(redesign_every)
+        self.ms_limit_db, self.gain_range = float(ms_limit_db), tuple(gain_range)
+        self.delay_margin, self.warmup_gain = float(delay_margin), float(warmup_gain)
+        self.acceptance = acceptance
+        self.accept_ratio, self.abort_ratio = float(accept_ratio), float(abort_ratio)
+        self.abort_min_frames, self.n_taps_log = int(abort_min_frames), int(n_taps_log)
+        self.max_radius = float(max_radius)
+        self.supervisor, self.blowup_factor, self.holdoff = supervisor, float(blowup_factor), int(holdoff)
+        self.fast_alpha = 1.0 / fast_window
+        self.rng = np.random.default_rng() if rng is None else rng
+        self.name = name
+
+        self.y_hist = np.zeros(self.N)                   # y_{k-1}, y_{k-2}, ...
+        self.u_hist = np.zeros(self.N)                   # applied u_{k-1}, ...
+        self.k = 0
+        self.u_int = 0.0
+        self.design = None
+        self.good_design = None
+        self.n_accepted = 0
+        self.xc = None
+        self.period_sq, self.healthy = 0.0, deque(maxlen=8)
+        self.fast_ms = None
+        self.hold = 0
+        self.log = []                                    # (k, event, info)
+        self.trial = None
+        self.incumbent_ms = None
+        self.clean = True
+        self.p_sq = 0.0
+        self.trial_fast = 0.0
+
+    # ---------------- design ---------------- #
+    def _redesign(self):
+        theta, moved = stabilize_theta(self.rls.theta, self.max_radius)
+        q = self.rls.residual_variance(theta)
+        taps = implied_taps(theta, self.n_taps_log)
+        try:
+            d = tune_model_lqg(theta, q, self.dt, self.ms_limit_db, self.gain_range, self.delay_margin)
+        except (RuntimeError, np.linalg.LinAlgError, ValueError) as exc:
+            self.log.append((self.k, "rejected", dict(reason=str(exc), g=taps.tolist())))
+            return
+        d.g = taps
+        info = dict(rho=d.rho, r_kalman=d.r_kalman, s=d.s, q=q, g=taps.tolist(),
+                    pred_std=d.predicted_output_std(), dither=self.dither_level,
+                    roots_stabilized=moved)
+        if self.acceptance == "residual":
+            if self.incumbent_ms is None:
+                self.log.append((self.k, "no reference", info))
+                return
+            self.trial = dict(prev=self.design, cand=d, start=self.k, info=info)
+            self._activate(d)
+            self.clean = False
+            self.trial_fast = self.incumbent_ms
+            self.log.append((self.k, "trial", info))
+            return
+        self._accept(d, info)
+
+    def _accept(self, d, info):
+        if self.design is not d:
+            self._activate(d)
+        self.n_accepted += 1
+        if self.n_accepted >= self.switch_designs:
+            self.dither_level = self.dither_after
+        self.log.append((self.k, "accepted", info))
+
+    def _activate(self, design):
+        self.design = design
+        if design is not None:
+            self.xc = np.r_[self.y_hist, self.u_hist, self.u_hist[0]]
+
+    def _finish_trial(self, ms):
+        t, self.trial = self.trial, None
+        ratio = float(np.sqrt(ms / self.incumbent_ms))
+        if ratio <= self.accept_ratio:
+            self.incumbent_ms = ms
+            self._accept(t["cand"], dict(t["info"], trial_rms_ratio=ratio))
+        else:
+            self._activate(t["prev"])
+            self.hold = max(self.hold, 1)
+            self.log.append((self.k, "trial rejected", dict(t["info"], trial_rms_ratio=ratio)))
+
+    def _watch_trial(self, y):
+        self.trial_fast = (1 - self.fast_alpha) * self.trial_fast + self.fast_alpha * y * y
+        if self.k - self.trial["start"] >= self.abort_min_frames \
+                and self.trial_fast > self.abort_ratio ** 2 * self.incumbent_ms:
+            t, self.trial = self.trial, None
+            self._activate(t["prev"])
+            self.hold = max(self.hold, 1)
+            self.clean = False
+            self.log.append((self.k, "trial aborted", dict(t["info"], after=self.k - t["start"])))
+
+    # ---------------- supervisor ---------------- #
+    def _supervise(self, y):
+        if not self.supervisor:
+            return
+        self.fast_ms = y * y if self.fast_ms is None else \
+            (1 - self.fast_alpha) * self.fast_ms + self.fast_alpha * y * y
+        self.period_sq += y * y
+        if self.trial is None and self.healthy \
+                and self.fast_ms > (self.blowup_factor ** 2) * np.median(self.healthy) \
+                and self.design is not None and self.design is not self.good_design:
+            self._activate(self.good_design)
+            self.hold = self.holdoff
+            self.fast_ms = None
+            self.clean = False
+            self.dither_level = self.dither_std
+            self.log.append((self.k, "reverted", dict(to="previous good design"
+                                                       if self.good_design is not None
+                                                       else "integrator")))
+
+    def _end_of_period(self):
+        ms = self.period_sq / self.redesign_every
+        self.period_sq = 0.0
+        if not self.supervisor:
+            return
+        if not self.healthy or ms <= (self.blowup_factor ** 2) * np.median(self.healthy):
+            self.healthy.append(ms)
+            self.good_design = self.design
+
+    # ---------------- control ---------------- #
+    def step(self, y):
+        y = float(y)
+        if self.k >= self.N:
+            self.rls.update(np.r_[self.y_hist, self.u_hist], y)
+        self._supervise(y)
+        if self.trial is not None:
+            self._watch_trial(y)
+
+        if self.k > 0 and self.k % self.redesign_every == 0:
+            ms, self.p_sq = self.p_sq / self.redesign_every, 0.0
+            if self.trial is not None:
+                self._finish_trial(ms)
+            elif self.clean:
+                self.incumbent_ms = ms
+            self.clean = True
+            self._end_of_period()                        # after the trial decision
+            if self.hold > 0:
+                self.hold -= 1
+            elif len(self.rls.buf) >= self.min_samples:
+                self._redesign()
+
+        r = self.dither_level * self.rng.standard_normal()
+        if self.design is None:
+            self.u_int += self.warmup_gain * y
+            u_ctrl = self.u_int
+        else:
+            dsg = self.design
+            u_ctrl = (dsg.Cc @ self.xc).item() + dsg.Dc.item() * y
+            self.u_int = u_ctrl                          # fallback integrator starts bumpless
+        u = u_ctrl + r
+
+        if self.design is not None:
+            dsg = self.design
+            self.xc = dsg.F_bar @ self.xc + dsg.L_bar[:, 0] * y + dsg.Bd[:, 0] * u
+        self.y_hist = np.r_[y, self.y_hist[:-1]]
+        self.u_hist = np.r_[u, self.u_hist[:-1]]
+        self.p_sq += y * y
         self.k += 1
         return u, r

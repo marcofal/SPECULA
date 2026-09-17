@@ -100,6 +100,55 @@ class TestAdaptiveLqgLib(unittest.TestCase):
         self.assertLess(rms_lqg, rms_int)
 
 
+    def test_model_lqg_on_free_theta_equals_fir_ar_lqg(self):
+        """The free-theta design on the theta of a FIR + AR model is the structured
+        Kalman + LQR (same controller transfer function)."""
+        g, a, q = np.array([0.0, -0.7, -0.3]), np.array([1.2, -0.25]), 4.0
+        theta = al.theta_from_fir_ar(g, a)
+        f = np.linspace(1.0, 450.0, 60)
+        for s, rho in ((0.0, 1.0), (1.0, 1.0), (100.0, 10.0)):
+            d_free = al.ModelLQG(*al.buffer_model(theta), q, rho, s)
+            d_fir = al.FirArLQG(g, a, q, r=0.0, rho=rho, r_kalman=max(s * q, 1e-9))
+            c_free = al.frequency_response(*d_free.ctrl, f, 1e-3)
+            c_fir = al.frequency_response(*d_fir.ctrl, f, 1e-3)
+            np.testing.assert_allclose(c_free, c_fir, rtol=1e-6, atol=1e-8)
+
+    def test_stabilize_theta(self):
+        theta = al.theta_from_fir_ar([0.0, -1.0, 0.0], [2.1, -1.2])      # A roots 1.2 +- ... (unstable)
+        self.assertGreater(np.abs(np.roots(np.r_[1.0, -theta[:5]])).max(), 1.0)
+        th_s, moved = al.stabilize_theta(theta, 0.99)
+        self.assertEqual(moved, 2)
+        self.assertLessEqual(np.abs(np.roots(np.r_[1.0, -th_s[:5]])).max(), 0.99 + 1e-9)
+        np.testing.assert_array_equal(th_s[5:], theta[5:])
+        th_ok, moved_ok = al.stabilize_theta(al.theta_from_fir_ar([0.0, -1.0, 0.0], [1.2, -0.25]))
+        self.assertEqual(moved_ok, 0)
+
+    def test_free_theta_mode_beats_integrator_without_dither(self):
+        T = 9000
+        d = ar2_turbulence(T)
+        taps = fractional_taps(2.3, 0.6)                 # true plant, unknown to the controller
+
+        ctrl = al.AdaptiveModeFreeTheta(dt=1e-3, N=6, window=3000, min_samples=2000,
+                                        dither_std=2.0, dither_after=0.0, warmup_gain=0.4,
+                                        rng=np.random.default_rng(3))
+        y_free = run_fir_loop(lambda y: ctrl.step(y)[0], d, taps)
+
+        state = [0.0]
+
+        def integrator(y):
+            state[0] += 0.4 * y
+            return state[0]
+        y_int = run_fir_loop(integrator, d, taps)
+
+        events = [ev for _, ev, _ in ctrl.log]
+        self.assertIn("accepted", events, f"no design accepted: {ctrl.log}")
+        self.assertNotIn("reverted", events)
+        self.assertEqual(ctrl.dither_level, 0.0)
+        rms_free = np.sqrt(np.mean(y_free[-2000:] ** 2))
+        rms_int = np.sqrt(np.mean(y_int[-2000:] ** 2))
+        self.assertLess(rms_free, rms_int)
+
+
 class TestDataDrivenLqgObject(unittest.TestCase):
 
     def _loop(self, obj, d, t_step):
@@ -151,6 +200,33 @@ class TestDataDrivenLqgObject(unittest.TestCase):
         self.assertEqual(design[0, cols.index('active')], 1.0)
         self.assertEqual(design[0, cols.index('n_accepted')], len(accepted))
         np.testing.assert_allclose(design[0, len(cols):], accepted[-1]["g"], atol=1e-5)
+
+
+    def test_object_free_theta(self):
+        simul_params = SimulParams(time_step=0.001)
+        T = 5000
+        d = np.column_stack([ar2_turbulence(T, seed=s, std=50.0) for s in (1, 2, 3)])
+
+        obj = DataDrivenLqg(simul_params, n_modes=3, lqg_modes=[1], int_gain=0.4,
+                            method='free_theta', n_theta=6, plant_window=2500, min_samples=1500,
+                            dither_std=2.0, dither_after=0.5, delay=1, target_device_idx=-1)
+        comm = self._loop(obj, d, obj.seconds_to_t(0.001))
+
+        ref = Integrator(int_gain=[0.4], n_modes=[3], delay=1, target_device_idx=-1)
+        comm_ref = self._loop(ref, d, ref.seconds_to_t(0.001))
+        np.testing.assert_allclose(comm[:, [0, 2]], comm_ref[:, [0, 2]], rtol=1e-4, atol=1e-3)
+
+        ctrl = obj.mode_ctrl[0]
+        accepted = [info for _, ev, info in ctrl.log if ev == "accepted"]
+        self.assertTrue(accepted, f"no design accepted: {ctrl.log}")
+        design = cpuArray(obj.outputs['out_design'].value)
+        cols = DataDrivenLqg.DESIGN_COLUMNS
+        self.assertEqual(design[0, cols.index('n_accepted')], len(accepted))
+        n_turned_down = sum(1 for _, ev, _ in ctrl.log
+                            if ev in ("rejected", "trial rejected", "trial aborted"))
+        self.assertEqual(design[0, cols.index('n_rejected')], n_turned_down)
+        if ctrl.design is not None:
+            np.testing.assert_allclose(design[0, len(cols):], ctrl.design.g, atol=1e-5)
 
 
 if __name__ == '__main__':
