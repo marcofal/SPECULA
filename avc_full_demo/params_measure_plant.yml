@@ -1,0 +1,209 @@
+---
+# Plant-measurement harness: inject a KNOWN sinusoidal command at the
+# vibration frequency into the same command path AVC uses (-> comm_combiner
+# -> lowpass -> dm), with the vibration disturbance turned OFF, and record
+# both the injected probe and the resulting mode-0 residual. A lock-in at
+# the probe frequency then gives the TRUE closed-loop command->residual
+# transfer P_avc(f) directly from telemetry -- the empirical replacement
+# for the analytic calibrate_avc.py.
+#
+# IMPORTANT: this harness contains the SAME main integrator as
+# params_scao_avc_full_demo.yml, and the loop is CLOSED. That is essential:
+# with the integrator active the transfer AVC sees is multiplied by the
+# closed-loop sensitivity S = 1/(1+HOL), so the plant measured here differs
+# substantially from the open-loop (integrator-off) case. Any change to the
+# integrator gain/delay, the lowpass, or the frequency requires re-running
+# this and updating x0/x1 in the demo.
+
+main:
+  class:             'SimulParams'
+  root_dir:          './calib'
+  pixel_pupil:       64
+  pixel_pitch:       0.015625
+  total_time:        6.000
+  time_step:         0.001
+
+seeing:
+  class:             'WaveGenerator'
+  constant:          0.01                    # atmosphere effectively off: the lock-in must see only
+                                             # the probe, otherwise atmospheric power at the probe
+                                             # frequency biases the measured transfer
+  wave_type:         'SIN'
+  outputs: ['output']
+
+wind_speed:
+  class:             'WaveGenerator'
+  constant:          [5.]
+  outputs: ['output']
+
+wind_direction:
+  class:             'WaveGenerator'
+  constant:          [10.]
+  outputs: ['output']
+
+atmo:
+  class:                'AtmoEvolution'
+  simul_params_ref:     'main'
+  L0:                   25
+  heights:              [0.]
+  Cn2:                  [1.00]
+  fov:                  0.0
+  pixel_phasescreens:   1024
+  inputs:
+    seeing: 'seeing.output'
+    wind_speed: 'wind_speed.output'
+    wind_direction: 'wind_direction.output'
+  outputs: ['layer_list']
+
+on_axis_source:
+  class:             'Source'
+  polar_coordinates:  [0.0, 0.0]
+  magnitude:         5
+  wavelengthInNm:    600
+
+pupilstop:
+  class: 'Pupilstop'
+  simul_params_ref:     'main'
+
+# vibration disabled (amp 0) so the only mode-0 drive is our probe
+vib_wave:
+  class:             'WaveGenerator'
+  wave_type:         'SIN'
+  amp:               [0.0]
+  freq:              [47.0]
+  outputs: ['output']
+
+vib_dm:
+  class:             'DM'
+  simul_params_ref:  'main'
+  type_str:          'zernike'
+  idx_modes:         [0]
+  obsratio:          0.1
+  height:            0
+  inputs:
+    in_command: 'vib_wave.output'
+  outputs: ['out_layer']
+
+# the probe: a known sinusoid at the vibration frequency, injected into
+# mode 0 exactly where AVC's command would go (-> lowpass -> dm)
+probe_wave:
+  class:             'WaveGenerator'
+  wave_type:         'SIN'
+  amp:               [30.0]                  # SMALL on purpose: the closed loop AMPLIFIES ~4-7x at
+                                             # 47Hz, so a large probe drives the residual far outside
+                                             # the SH WFS linear range and the measured transfer
+                                             # becomes meaningless (a 500nm probe gave 1287nm residual
+                                             # RMS and a bogus gain). Keep the response ~100-200nm.
+  freq:              [47.0]
+  outputs: ['output']
+
+probe_inserter:
+  class:             'BaseInserter'
+  output_size:        40
+  slice_args:        [[0, 1], [0, 1]]
+  inputs:
+    in_value: 'probe_wave.output'
+  outputs: ['out_value']
+
+# same integrator as the demo -- the loop must be CLOSED so the measured
+# transfer includes the closed-loop sensitivity S = 1/(1+HOL)
+control:
+  class:             'Integrator'
+  delay:             2
+  int_gain:          [0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,
+                      0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,
+                      0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,
+                      0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5]
+  inputs:
+      delta_comm: 'rec.out_modes'
+  outputs:  ['out_comm']
+
+# probe is injected at exactly the point AVC's command enters the loop
+comm_combiner:
+  class:             'BaseOperation'
+  sum:               True
+  inputs:
+    in_value1: 'control.out_comm'
+    in_value2: 'probe_inserter.out_value'
+  outputs: ['out_value']
+
+lowpass:
+  class:             'LowPassFilter'
+  simul_params_ref:  'main'
+  cutoff_freq:       [80.0]
+  n_ord:             1
+  n_modes:           40
+  delay:             0
+  inputs:
+    delta_comm: 'comm_combiner.out_value'
+  outputs: ['out_comm']
+
+prop:
+  class:                'AtmoPropagation'
+  simul_params_ref:     'main'
+  source_dict_ref:      ['on_axis_source']
+  inputs:
+    atmo_layer_list: ['atmo.layer_list']
+    common_layer_list: ['pupilstop',
+                  'dm.out_layer:-1',
+                  'vib_dm.out_layer']
+  outputs: ['out_on_axis_source_ef']
+
+sh:
+  class:             'SH'
+  subap_wanted_fov:  4.0
+  sensor_pxscale:    0.5
+  subap_npx:         8
+  subap_on_diameter: 8
+  wavelengthInNm:    600
+  inputs:
+    in_ef: 'prop.out_on_axis_source_ef'
+  outputs:  ['out_i']
+
+detector:
+  class:             'CCD'
+  simul_params_ref:  'main'
+  size:              [64,64]
+  dt:                0.001
+  bandw:             300
+  photon_noise:      True
+  readout_noise:     True
+  readout_level:     1.0
+  quantum_eff:       0.3
+  inputs:
+    in_i: 'sh.out_i'
+  outputs:  ['out_pixels']
+
+slopec:
+  class:             'ShSlopec'
+  subapdata_object:  'scao_subaps_n8_th0.5'
+  weightedPixRad:    4.0
+  inputs:
+    in_pixels:        'detector.out_pixels'
+  outputs:  ['out_slopes', 'out_subapdata']
+
+rec:
+  class:              'Modalrec'
+  recmat_object:      'scao_rec_n8_th0.5'
+  inputs:
+    in_slopes:        'slopec.out_slopes'
+  outputs:  ['out_modes']
+
+dm:
+  class:             'DM'
+  simul_params_ref:  'main'
+  type_str:          'zernike'
+  nmodes:            40
+  obsratio:          0.1
+  height:            0
+  inputs:
+      in_command: 'lowpass.out_comm'
+  outputs:  ['out_layer']
+
+data_store:
+  class:             'DataStore'
+  store_dir:         './output_probe'
+  inputs:
+    input_list: [
+                 'res_modes-rec.out_modes',
+                 'probe-probe_wave.output']

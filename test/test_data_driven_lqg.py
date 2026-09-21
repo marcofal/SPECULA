@@ -9,6 +9,8 @@ from specula import cpuArray
 from specula.base_value import BaseValue
 from specula.data_objects.simul_params import SimulParams
 from specula.lib import adaptive_lqg as al
+from specula.lib import adaptive_lqg_mimo as am
+from specula.lib import adaptive_lqg_var as avar
 from specula.processing_objects.data_driven_lqg import DataDrivenLqg
 from specula.processing_objects.integrator import Integrator
 
@@ -149,13 +151,167 @@ class TestAdaptiveLqgLib(unittest.TestCase):
         self.assertLess(rms_free, rms_int)
 
 
+class TestAdaptiveLqgMimoLib(unittest.TestCase):
+
+    def test_m1_equals_siso(self):
+        """With one mode the MIMO model, design and stabilization are the SISO ones."""
+        theta = al.theta_from_fir_ar([0.0, -1.0, -0.1], [1.4, -0.6, 0.1])
+        N = theta.size // 2
+        f = np.linspace(1.0, 450.0, 40)
+        for M1, Mm in zip(al.buffer_model(theta), am.buffer_model(theta[:, None], N, 1)):
+            np.testing.assert_array_equal(M1, Mm)
+        for s, rho in ((0.0, 1.0), (10.0, 0.0), (100.0, 10.0)):
+            d1 = al.ModelLQG(*al.buffer_model(theta), 3.0, rho, s)
+            dm = am.MimoModelLQG(*am.buffer_model(theta[:, None], N, 1), [[3.0]], rho, s)
+            np.testing.assert_allclose(al.frequency_response(*d1.ctrl, f, 1e-3),
+                                       am.frequency_response(*dm.ctrl, f, 1e-3)[:, 0, 0], rtol=1e-8, atol=1e-10)
+            self.assertAlmostEqual(d1.predicted_output_std(), dm.predicted_output_std(), places=8)
+        unstable = al.theta_from_fir_ar([0.0, -1.0, 0.0], [2.1, -1.2])
+        th1, n1 = al.stabilize_theta(unstable, 0.99)
+        thm, nm = am.stabilize_theta(unstable[:, None], 1, 0.99)
+        self.assertEqual(n1, nm)
+        np.testing.assert_allclose(th1, thm[:, 0], atol=1e-10)
+
+    def test_masked_rls_matches_batch(self):
+        rng = np.random.default_rng(0)
+        n, m, W, T = 6, 3, 300, 900
+        Phi = rng.standard_normal((T, n))
+        Y = Phi @ rng.standard_normal((n, m)) + 0.1 * rng.standard_normal((T, m))
+        masks = am.own_ar_masks(1, 3)                  # 3 modes, N = 1: y_i and all u
+        rls = am.MimoSlidingRLS(n, m, W, refresh_every=10**9, masks=masks)
+        for k in range(T):
+            rls.update(Phi[k], Y[k])
+        for j, ix in enumerate(masks):
+            X = Phi[-W:, ix]
+            b = np.linalg.solve(1e-6 * np.eye(len(ix)) + X.T @ X, X.T @ Y[-W:, j])
+            np.testing.assert_allclose(rls.theta[ix, j], b, rtol=1e-6, atol=1e-8)
+            self.assertEqual(np.abs(np.delete(rls.theta[:, j], ix)).max(), 0.0)
+
+    def test_block_diagonal_theta_gives_siso_controllers(self):
+        N = 5
+        tha = al.theta_from_fir_ar([0.0, -1.0], [1.5, -0.7, 0.1])
+        thb = al.theta_from_fir_ar([0.0, -0.8], [0.9, 0.0, 0.0])
+        Th = np.zeros((4 * N, 2))
+        Th[0:2 * N:2, 0], Th[2 * N::2, 0] = tha[:N], tha[N:]
+        Th[1:2 * N:2, 1], Th[2 * N + 1::2, 1] = thb[:N], thb[N:]
+        dm = am.MimoModelLQG(*am.buffer_model(Th, N, 2), np.diag([2.0, 0.5]), 1.0, 10.0)
+        f = np.linspace(1.0, 450.0, 40)
+        C = am.frequency_response(*dm.ctrl, f, 1e-3)
+        for i, (t_, q) in enumerate(((tha, 2.0), (thb, 0.5))):
+            d1 = al.ModelLQG(*al.buffer_model(t_), q, 1.0, 10.0)
+            np.testing.assert_allclose(C[:, i, i], al.frequency_response(*d1.ctrl, f, 1e-3), rtol=1e-8, atol=1e-10)
+        np.testing.assert_allclose(C[:, 0, 1], 0.0, atol=1e-10)
+        np.testing.assert_allclose(C[:, 1, 0], 0.0, atol=1e-10)
+
+
+class TestAdaptiveLqgVarLib(unittest.TestCase):
+
+    def test_structured_model_is_the_siso_model_for_one_mode(self):
+        """m = 1: the structured model gives the controller of the free-theta design on
+        theta_from_fir_ar (same innovations model, other realization)."""
+        g, a = np.array([0.0, -0.8, -0.2]), np.array([1.3, -0.5, 0.1])
+        f = np.linspace(1.0, 450.0, 40)
+        for s, rho in ((0.0, 1.0), (10.0, 0.0)):
+            d1 = al.ModelLQG(*al.buffer_model(al.theta_from_fir_ar(g, a)), 2.0, rho, s)
+            dv = am.MimoModelLQG(*avar.structured_model(g[None, :], a[:, None, None]), [[2.0]], rho, s)
+            np.testing.assert_allclose(am.frequency_response(*dv.ctrl, f, 1e-3)[:, 0, 0],
+                                       al.frequency_response(*d1.ctrl, f, 1e-3), rtol=1e-7, atol=1e-9)
+
+    def test_implied_plant_is_g_and_state_rebuild(self):
+        rng = np.random.default_rng(0)
+        G = np.array([[0.0, -0.8, -0.1], [0.05, -0.6, 0.0]])
+        A = 0.2 * rng.standard_normal((4, 2, 2))
+        As, Bs, Cs, Ks = avar.structured_model(G, A)
+        f = np.array([3.0, 60.0, 300.0])
+        z = np.exp(2j * np.pi * f * 1e-3)
+        P = am.frequency_response(As, Bs, Cs, 0.0, f, 1e-3)
+        for zz, Pz in zip(z, P):
+            np.testing.assert_allclose(Pz, np.diag([sum(G[i, j] * zz ** -(j + 1) for j in range(3))
+                                                    for i in range(2)]), atol=1e-12)
+        # the state rebuilt from histories is the state the model propagates
+        T = 40
+        U, E = rng.standard_normal((T, 2)), rng.standard_normal((T, 2))
+        x, Y = np.zeros(As.shape[0]), np.zeros((T, 2))
+        for k in range(T):
+            Y[k] = Cs @ x + E[k]
+            x = As @ x + Bs @ U[k] + Ks @ E[k]
+        k = T - 1
+        yh, uh = Y[k::-1][:8], U[k::-1][:8]                   # y_k, y_{k-1}, ... = history at k + 1
+        # before k = p + n_g the true state has zero pre-history; compare at the end only
+        np.testing.assert_allclose(avar.state_from_history(G, A, yh, uh), x, atol=1e-10)
+
+    def test_bias_state_rejects_a_static_aberration(self):
+        """The DC states: m more states, identity in C, and the loop cancels a steady
+        disturbance that the AR alone (poles < 1) leaves partly uncorrected."""
+        rng = np.random.default_rng(3)
+        m = 2
+        G = np.array([[0.0, -0.7, -0.05], [0.0, -0.6, 0.0]])
+        A = np.zeros((3, m, m))
+        A[0], A[1] = 0.8 * np.eye(m), 0.1 * np.eye(m)
+        pole = float(np.exp(-1e-3 / 2.0))
+        n_plain = avar.structured_model(G, A)[0].shape[0]
+        As, Bs, Cs, Ks = avar.structured_model(G, A, pole)
+        self.assertEqual(As.shape[0], n_plain + m)
+        np.testing.assert_allclose(Cs[:, -m:], np.eye(m), atol=0)
+        np.testing.assert_allclose(As[-m:, -m:], pole * np.eye(m), atol=0)
+        Q = avar.bias_noise(G, A, 0.1 * np.ones(m))
+        self.assertEqual(Q.shape, (n_plain + m, n_plain + m))
+        taps = [np.diag(G[:, j]) for j in range(G.shape[1])]
+        out = {}
+        for label, kw in (("no bias", {}), ("bias", dict(Q_extra=Q))):
+            model = avar.structured_model(G, A, pole) if kw else avar.structured_model(G, A)
+            d = am.tune_mimo_model(*model, np.eye(m), 1e-3, ms_limit_db=6.0,
+                                   gain_range=(0.5, 1.5), delay_margin=0.5, **kw)
+            Ac, Bc, Cc, Dc = d.ctrl
+            x, ul = np.zeros(Ac.shape[0]), [np.zeros(m)] * (G.shape[1] + 1)
+            res = np.zeros(8000)
+            for k in range(len(res)):
+                y = np.array([50.0, 0.0]) + sum(taps[j] @ ul[j] for j in range(G.shape[1]))
+                u = Cc @ x + Dc @ y
+                x = Ac @ x + Bc @ y
+                ul = [u] + ul[:-1]
+                res[k] = y[0]
+            out[label] = abs(res[-2000:].mean())
+        self.assertLess(out["bias"], 0.3 * out["no bias"])
+
+    def test_hard_abort_fires_on_one_frame(self):
+        """One sample above hard_abort_ratio aborts the trial at once; the averaged test
+        cannot fire before abort_min_frames, which an unstable loop does not leave time for."""
+        for y2, expect in ((9.0, False), (25.0, True)):
+            c = avar.AdaptiveVarLQG(1e-3, 3, hard_abort_ratio=4.0, abort_min_frames=20)
+            c.incumbent_ms = 1.0
+            c.trial = dict(prev=None, cand="candidate", start=c.k, info={})
+            c.trial_fast = 1.0
+            c._watch_trial(y2)
+            aborted = [info for _, e, info in c.log if e == "trial aborted"]
+            self.assertEqual(c.trial is None, expect)
+            self.assertEqual(len(aborted), 1 if expect else 0)
+            if expect:
+                self.assertTrue(aborted[0]["instantaneous"])
+                self.assertEqual(aborted[0]["after"], 0)
+
+    def test_vector_ar_fit(self):
+        rng = np.random.default_rng(1)
+        At = np.array([[[0.6, 0.2], [-0.1, 0.5]], [[0.2, 0.0], [0.05, 0.3]]])
+        D = np.zeros((20000, 2))
+        for k in range(2, len(D)):
+            D[k] = At[0] @ D[k - 1] + At[1] @ D[k - 2] + rng.standard_normal(2)
+        A, S, moved = avar.fit_var(D, 2)
+        np.testing.assert_allclose(A, At, atol=0.03)
+        self.assertEqual(moved, 0)
+        e_var = np.sum(avar.var_prediction_error(D[-3000:], A, 2) ** 2)
+        e_ar = np.sum(avar.var_prediction_error(D[-3000:], avar.fit_var(D, 2, diag=True)[0], 2) ** 2)
+        self.assertLess(e_var, e_ar)
+
+
 class TestDataDrivenLqgObject(unittest.TestCase):
 
-    def _loop(self, obj, d, t_step):
+    def _loop(self, obj, d, t_step, M=None):
         """Drive the object in a SPECULA-like loop: controller delay 1 inside
         the object, DM layer read one frame later (dm.out_layer:-1), so
-        y_k = d_k - out_comm_{k-1}."""
+        y_k = d_k - M out_comm_{k-1} (M: modal cross-talk, identity by default)."""
         T, n = d.shape
+        M = np.eye(n) if M is None else M
         meas = BaseValue(value=np.zeros(n), target_device_idx=-1)
         obj.inputs['delta_comm'].set(meas)
         obj.setup()
@@ -163,7 +319,7 @@ class TestDataDrivenLqgObject(unittest.TestCase):
         comm = np.zeros((T, n))
         for k in range(T):
             t = k * t_step
-            meas.value = d[k] - prev_comm
+            meas.value = d[k] - M @ prev_comm
             meas.generation_time = t
             obj.check_ready(t)
             obj.trigger()
@@ -227,6 +383,75 @@ class TestDataDrivenLqgObject(unittest.TestCase):
         self.assertEqual(design[0, cols.index('n_rejected')], n_turned_down)
         if ctrl.design is not None:
             np.testing.assert_allclose(design[0, len(cols):], ctrl.design.g, atol=1e-5)
+
+
+    def test_object_mimo_free_theta(self):
+        """Two LQG modes jointly on a plant whose commands are rotated by 30 deg
+        (misregistration), the third mode on the integrator."""
+        simul_params = SimulParams(time_step=0.001)
+        T = 6000
+        d = np.column_stack([ar2_turbulence(T, seed=s, std=50.0) for s in (1, 2, 3)])
+        a = np.deg2rad(30.0)
+        M = np.eye(3)
+        M[:2, :2] = [[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]]
+
+        obj = DataDrivenLqg(simul_params, n_modes=3, lqg_modes=[0, 1], int_gain=0.4,
+                            method='mimo_free_theta', n_theta=6, plant_window=2500, min_samples=1500,
+                            dither_std=2.0, dither_after=0.5, delay=1, target_device_idx=-1)
+        comm = self._loop(obj, d, obj.seconds_to_t(0.001), M)
+        ref = Integrator(int_gain=[0.4], n_modes=[3], delay=1, target_device_idx=-1)
+        comm_ref = self._loop(ref, d, ref.seconds_to_t(0.001), M)
+        np.testing.assert_allclose(comm[:, 2], comm_ref[:, 2], rtol=1e-4, atol=1e-3)
+
+        self.assertEqual(len(obj.mode_ctrl), 1)
+        ctrl = obj.mode_ctrl[0]
+        accepted = [info for _, ev, info in ctrl.log if ev == "accepted"]
+        self.assertTrue(accepted, f"no design accepted: {ctrl.log}")
+        design = cpuArray(obj.outputs['out_design'].value)
+        cols = DataDrivenLqg.DESIGN_COLUMNS
+        self.assertEqual(design.shape, (2, len(cols) + 3))
+        np.testing.assert_array_equal(design[:, cols.index('n_accepted')], len(accepted))
+        if ctrl.design is not None:
+            np.testing.assert_allclose(design[:, len(cols):], ctrl.design.g, atol=1e-5)
+
+        res = d[1:, :2] - (M @ comm[:-1].T).T[:, :2]
+        res_int = d[1:, :2] - (M @ comm_ref[:-1].T).T[:, :2]
+        self.assertLess(np.sqrt(np.mean(res[-2000:] ** 2)), np.sqrt(np.mean(res_int[-2000:] ** 2)))
+
+
+    def test_object_var_lqg(self):
+        """Frozen-flow-like pair: mode 1 is mode 0 three frames later, and mode 0 is fast
+        (AR(1), 0.8), so only mode 0's past predicts mode 1. var_lqg starts per-mode,
+        moves to the vector AR and removes most of mode 1's residual."""
+        from scipy.signal import lfilter
+        simul_params = SimulParams(time_step=0.001)
+        T = 7000
+        rng = np.random.default_rng(4)
+        d0 = lfilter([1.0], [1.0, -0.8], rng.standard_normal(T))
+        d0 = 50.0 * d0 / d0.std()
+        d1 = np.r_[np.zeros(3), d0[:-3]] + 5.0 * rng.standard_normal(T)
+        d = np.column_stack([d0, d1, ar2_turbulence(T, seed=3, std=50.0)])
+
+        obj = DataDrivenLqg(simul_params, n_modes=3, lqg_modes=[0, 1], int_gain=0.4,
+                            method='var_lqg', p=4, n_g=3, plant_window=2500, min_samples=1500,
+                            dither_std=5.0, delay=1, target_device_idx=-1)
+        comm = self._loop(obj, d, obj.seconds_to_t(0.001))
+        ref = Integrator(int_gain=[0.4], n_modes=[3], delay=1, target_device_idx=-1)
+        comm_ref = self._loop(ref, d, ref.seconds_to_t(0.001))
+        np.testing.assert_allclose(comm[:, 2], comm_ref[:, 2], rtol=1e-4, atol=1e-3)
+
+        ctrl = obj.mode_ctrl[0]
+        accepted = [info for _, ev, info in ctrl.log if ev == "accepted"]
+        self.assertTrue(accepted, f"no design accepted: {ctrl.log}")
+        self.assertEqual(accepted[0]["structure"], "per-mode AR")
+        self.assertIn("vector AR", [a["structure"] for a in accepted])
+        # lag-2 taps: -1 (IV on a 5 nm dither against a fast 50 nm disturbance, 2500 frames)
+        np.testing.assert_allclose(np.asarray(accepted[-1]["g"])[:, 1], -1.0, atol=0.3)
+        design = cpuArray(obj.outputs['out_design'].value)
+        np.testing.assert_allclose(design[:, len(DataDrivenLqg.DESIGN_COLUMNS):], ctrl.design.g, atol=1e-5)
+        res1 = d[1:, 1] - comm[:-1, 1]
+        res1_int = d[1:, 1] - comm_ref[:-1, 1]
+        self.assertLess(np.sqrt(np.mean(res1[-2000:] ** 2)), 0.5 * np.sqrt(np.mean(res1_int[-2000:] ** 2)))
 
 
 if __name__ == '__main__':

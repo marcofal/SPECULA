@@ -1,0 +1,142 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\citation{muradore2012}
+\@writefile{toc}{\contentsline {section}{\numberline {1}The algorithm}{1}{section.1}\protected@file@percent }
+\newlabel{sec:alg}{{1}{1}{The algorithm}{section.1}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.1}State and control law}{1}{subsection.1.1}\protected@file@percent }
+\citation{gardner2005}
+\citation{lindsey1981}
+\citation{bodson1997}
+\newlabel{eq:theta}{{3}{2}{State and control law}{equation.3}{}}
+\newlabel{eq:thetacomplex}{{4}{2}{State and control law}{equation.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{The regularizer $\epsilon $.}{2}{section*.2}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.2}Adaptation}{2}{subsection.1.2}\protected@file@percent }
+\newlabel{eq:W}{{5}{2}{Adaptation}{equation.5}{}}
+\newlabel{eq:update}{{6}{2}{Adaptation}{equation.6}{}}
+\newlabel{eq:pll}{{7}{2}{Adaptation}{equation.7}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.3}Implementation notes}{2}{subsection.1.3}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {1.4}Parameters and internal states}{2}{subsection.1.4}\protected@file@percent }
+\newlabel{sec:params}{{1.4}{2}{Parameters and internal states}{subsection.1.4}{}}
+\citation{kahan1965}
+\citation{higham1993}
+\citation{neumaier1974}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Parameters and states of the SPECULA AVC object.}}{3}{table.caption.3}\protected@file@percent }
+\providecommand*\caption@xref[2]{\@setref\relax\@undefined{#1}}
+\newlabel{tab:avcpar}{{1}{3}{Parameters and states of the SPECULA AVC object}{table.caption.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{$c_x$ constant}{3}{section*.4}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{$\alpha _c$ is the numerical correction.}{3}{section*.5}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {2}Simulation in SPECULA}{3}{section.2}\protected@file@percent }
+\newlabel{sec:sim}{{2}{3}{Simulation in SPECULA}{section.2}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.1}Pipeline}{3}{subsection.2.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.2}Why 47 Hz is the interesting place to put a vibration}{3}{subsection.2.2}\protected@file@percent }
+\newlabel{sec:47hz}{{2.2}{3}{Why 47 Hz is the interesting place to put a vibration}{subsection.2.2}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Simulation parameters. All runs share the atmospheric seed, so configurations differ only in the AVC settings.}}{4}{table.caption.6}\protected@file@percent }
+\newlabel{tab:params}{{2}{4}{Simulation parameters. All runs share the atmospheric seed, so configurations differ only in the AVC settings}{table.caption.6}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.3}Calibrating the plant}{4}{subsection.2.3}\protected@file@percent }
+\newlabel{sec:calib}{{2.3}{4}{Calibrating the plant}{subsection.2.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{Stage 1: find the tone.}{4}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Stage 2: measure the response at that frequency.}{4}{section*.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Status in this work.}{4}{section*.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {subsection}{\numberline {2.4}Best configuration and results}{4}{subsection.2.4}\protected@file@percent }
+\newlabel{sec:best}{{2.4}{4}{Best configuration and results}{subsection.2.4}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {3}{\ignorespaces Performance of the recommended configuration, 10\,s run, statistics over the second half.}}{5}{table.caption.10}\protected@file@percent }
+\newlabel{tab:best}{{3}{5}{Performance of the recommended configuration, \SI {10}{s} run, statistics over the second half}{table.caption.10}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces Steady-state mode-0 residual spectra, with the injected disturbance for reference (grey). Without AVC the loop amplifies the tone to 17.4\,dB above the input. The two failing configurations track that peak exactly; the two working ones remove it, ending 18.2\,dB \emph  {below} the input. In the original configuration, adapting both the plant and the disturbance estimate, a broadband amplification is generated at all frequencies due to a wrong phasing of the command.}}{5}{figure.caption.11}\protected@file@percent }
+\newlabel{fig:psd}{{1}{5}{Steady-state mode-0 residual spectra, with the injected disturbance for reference (grey). Without AVC the loop amplifies the tone to \SI {17.4}{dB} above the input. The two failing configurations track that peak exactly; the two working ones remove it, ending \SI {18.2}{dB} \emph {below} the input. In the original configuration, adapting both the plant and the disturbance estimate, a broadband amplification is generated at all frequencies due to a wrong phasing of the command}{figure.caption.11}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3}Analysis: what works, and what cannot}{5}{section.3}\protected@file@percent }
+\newlabel{sec:analysis}{{3}{5}{Analysis: what works, and what cannot}{section.3}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.1}What the measurement contains}{5}{subsection.3.1}\protected@file@percent }
+\newlabel{sec:contains}{{3.1}{5}{What the measurement contains}{subsection.3.1}{}}
+\newlabel{eq:Z}{{9}{5}{What the measurement contains}{equation.9}{}}
+\citation{haykin2013}
+\citation{pigg2010tcst}
+\citation{pigg2010cdc}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.2}Why plant identification is ill-posed}{6}{subsection.3.2}\protected@file@percent }
+\newlabel{sec:illposed}{{3.2}{6}{Why plant identification is ill-posed}{subsection.3.2}{}}
+\newlabel{eq:kernel}{{10}{6}{Why plant identification is ill-posed}{equation.10}{}}
+\newlabel{eq:fixedpoint}{{11}{6}{Why plant identification is ill-posed}{equation.11}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.3}Cost Function Analysis}{6}{subsection.3.3}\protected@file@percent }
+\newlabel{sec:cost}{{3.3}{6}{Cost Function Analysis}{subsection.3.3}{}}
+\newlabel{eq:Zhat}{{12}{6}{Cost Function Analysis}{equation.12}{}}
+\newlabel{eq:integral}{{14}{6}{Cost Function Analysis}{equation.14}{}}
+\citation{sanders2007}
+\citation{khalil2002}
+\@writefile{lof}{\contentsline {figure}{\numberline {2}{\ignorespaces The averaging step. (a) Exact per-sample recursion against the solution of the averaged ODE \eqref  {eq:twohalves}, at $g_x=3$. (b) Zoom: the $2\omega $ ripple that the average removes. (c) Maximum discrepancy against the small parameter $\mu =g_xT_s$, confirming the $O(\mu )$ error bound.}}{7}{figure.caption.12}\protected@file@percent }
+\newlabel{fig:averaging}{{2}{7}{The averaging step. (a) Exact per-sample recursion against the solution of the averaged ODE \eqref {eq:twohalves}, at $g_x=3$. (b) Zoom: the $2\omega $ ripple that the average removes. (c) Maximum discrepancy against the small parameter $\mu =g_xT_s$, confirming the $O(\mu )$ error bound}{figure.caption.12}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.4}Convergence analysis}{7}{subsection.3.4}\protected@file@percent }
+\newlabel{sec:conv}{{3.4}{7}{Convergence analysis}{subsection.3.4}{}}
+\newlabel{eq:components}{{15}{7}{Convergence analysis}{equation.15}{}}
+\newlabel{eq:twoincrements}{{16}{7}{Convergence analysis}{equation.16}{}}
+\newlabel{eq:yforms}{{17}{7}{Convergence analysis}{equation.17}{}}
+\newlabel{eq:twohalves}{{18}{7}{Convergence analysis}{equation.18}{}}
+\newlabel{eq:lambda_dynamics}{{20}{7}{Convergence analysis}{equation.20}{}}
+\newlabel{eq:kappa}{{21}{7}{Convergence analysis}{equation.21}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {3}{\ignorespaces Violation of the margin condition \eqref  {eq:margin}, with the plant estimate frozen at a controlled phase error $\Delta \varphi $ and $|\kappa |=1$. (a) Normalised disturbance error $|\hat  \Lambda -\hat  \Lambda _\infty |$: exponential decay for $\Delta \varphi <90^\circ $ (solid), exponential growth for $\Delta \varphi >90^\circ $ (dashed); (b) Measured rate against the prediction $\gamma \,\mathrm  {Re}\,\kappa =\tfrac  12 g_x\cos \Delta \varphi $.}}{8}{figure.caption.13}\protected@file@percent }
+\newlabel{fig:margin}{{3}{8}{Violation of the margin condition \eqref {eq:margin}, with the plant estimate frozen at a controlled phase error $\Delta \varphi $ and $|\kappa |=1$. (a) Normalised disturbance error $|\hat \Lambda -\hat \Lambda _\infty |$: exponential decay for $\Delta \varphi <90^\circ $ (solid), exponential growth for $\Delta \varphi >90^\circ $ (dashed); (b) Measured rate against the prediction $\gamma \,\mathrm {Re}\,\kappa =\tfrac 12 g_x\cos \Delta \varphi $}{figure.caption.13}{}}
+\newlabel{eq:laminf}{{22}{8}{Convergence analysis}{equation.22}{}}
+\newlabel{eq:deltadecay}{{23}{8}{Convergence analysis}{equation.23}{}}
+\newlabel{eq:margin}{{24}{8}{Convergence analysis}{equation.24}{}}
+\newlabel{eq:stepbound}{{25}{8}{Convergence analysis}{equation.25}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.5}Are the regressors persistently exciting?}{8}{subsection.3.5}\protected@file@percent }
+\newlabel{sec:pe}{{3.5}{8}{Are the regressors persistently exciting?}{subsection.3.5}{}}
+\newlabel{eq:info}{{26}{8}{Are the regressors persistently exciting?}{equation.26}{}}
+\citation{ljung1999}
+\citation{sastry1989}
+\@writefile{toc}{\contentsline {subsection}{\numberline {3.6}Experimental confirmation}{9}{subsection.3.6}\protected@file@percent }
+\newlabel{sec:expconf}{{3.6}{9}{Experimental confirmation}{subsection.3.6}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {4}{\ignorespaces Ablation over the adapted parameter set.}}{9}{table.caption.14}\protected@file@percent }
+\newlabel{tab:abl}{{4}{9}{Ablation over the adapted parameter set}{table.caption.14}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {4}A simplified and formally sound AVC algorithm}{9}{section.4}\protected@file@percent }
+\newlabel{sec:simplified}{{4}{9}{A simplified and formally sound AVC algorithm}{section.4}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.1}What is removed}{9}{subsection.4.1}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{The plant adaptation.}{9}{section*.15}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{The regulariser and the division guard.}{9}{section*.16}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{The cost function.}{9}{section*.17}\protected@file@percent }
+\newlabel{eq:eisy}{{27}{9}{The cost function}{equation.27}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.2}The algorithm}{9}{subsection.4.2}\protected@file@percent }
+\newlabel{eq:fixedmap}{{28}{9}{The algorithm}{equation.28}{}}
+\citation{francis1976}
+\newlabel{eq:simpleint}{{29}{10}{The algorithm}{equation.29}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.3}What can be guaranteed}{10}{subsection.4.3}\protected@file@percent }
+\newlabel{eq:simpledyn}{{30}{10}{What can be guaranteed}{equation.30}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.4}Simulation results}{10}{subsection.4.4}\protected@file@percent }
+\newlabel{sec:simplresults}{{4.4}{10}{Simulation results}{subsection.4.4}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {5}{\ignorespaces Simplified AVC in the full loop, 10\,s run, statistics over the second half. Holding the frequency fixed at the true 47\,Hz instead of tracking it brings the residual down to 15.0\,nm and the line to 2.8\,nm: the small penalty of the running PLL is the price of not needing to know the frequency in advance.}}{10}{table.caption.18}\protected@file@percent }
+\newlabel{tab:simplres}{{5}{10}{Simplified AVC in the full loop, \SI {10}{s} run, statistics over the second half. Holding the frequency fixed at the true \SI {47}{Hz} instead of tracking it brings the residual down to \SI {15.0}{nm} and the line to \SI {2.8}{nm}: the small penalty of the running PLL is the price of not needing to know the frequency in advance}{table.caption.18}{}}
+\@writefile{toc}{\contentsline {paragraph}{Harmonics rejection.}{10}{section*.20}\protected@file@percent }
+\@writefile{lof}{\contentsline {figure}{\numberline {4}{\ignorespaces Simplified AVC in closed loop. (a) Steady-state mode-0 spectrum with the module off and on, against the injected disturbance (grey). (b) The same run in the time domain; convergence takes about 2\,s, set by $\tfrac  12 g_x\,\mathrm  {Re}\,\kappa $.}}{11}{figure.caption.19}\protected@file@percent }
+\newlabel{fig:simplpsd}{{4}{11}{Simplified AVC in closed loop. (a) Steady-state mode-0 spectrum with the module off and on, against the injected disturbance (grey). (b) The same run in the time domain; convergence takes about \SI {2}{s}, set by $\tfrac 12 g_x\,\mathrm {Re}\,\kappa $}{figure.caption.19}{}}
+\newlabel{tab:simplharmonics}{{4.4}{11}{Harmonics rejection}{section*.20}{}}
+\@writefile{toc}{\contentsline {paragraph}{Sweeping the calibration phase.}{11}{section*.21}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {6}{\ignorespaces Steady residual against plant-phase error, frequency held fixed.}}{11}{table.caption.22}\protected@file@percent }
+\newlabel{tab:simplsweep}{{6}{11}{Steady residual against plant-phase error, frequency held fixed}{table.caption.22}{}}
+\@writefile{toc}{\contentsline {subsection}{\numberline {4.5}Ten modes, ten channels}{11}{subsection.4.5}\protected@file@percent }
+\newlabel{sec:multimode}{{4.5}{11}{Ten modes, ten channels}{subsection.4.5}{}}
+\bibstyle{ieeetr}
+\bibdata{avc_report}
+\bibcite{muradore2012}{1}
+\bibcite{gardner2005}{2}
+\@writefile{lof}{\contentsline {figure}{\numberline {5}{\ignorespaces The margin condition in the full simulation. (a) Steady mode-0 RMS against calibration phase error; the shaded band is the predicted cone \eqref  {eq:margin} and the dotted line the residual without AVC. (b) Trajectories of $|\hat  \Lambda |$: settling inside the cone, and the unbounded ramp of the integrator outside it.}}{12}{figure.caption.23}\protected@file@percent }
+\newlabel{fig:simplmargin}{{5}{12}{The margin condition in the full simulation. (a) Steady mode-0 RMS against calibration phase error; the shaded band is the predicted cone \eqref {eq:margin} and the dotted line the residual without AVC. (b) Trajectories of $|\hat \Lambda |$: settling inside the cone, and the unbounded ramp of the integrator outside it}{figure.caption.23}{}}
+\@writefile{toc}{\contentsline {paragraph}{Calibrating ten channels in one run.}{12}{section*.24}\protected@file@percent }
+\@writefile{lot}{\contentsline {table}{\numberline {7}{\ignorespaces Ten channels in the same loop, 10\,s run, statistics over the second half. Every channel rejects its own tone; the modes carrying no vibration are left alone, so the channels neither fight each other nor spill into the rest of the spectrum.}}{12}{table.caption.25}\protected@file@percent }
+\newlabel{tab:multimode}{{7}{12}{Ten channels in the same loop, \SI {10}{s} run, statistics over the second half. Every channel rejects its own tone; the modes carrying no vibration are left alone, so the channels neither fight each other nor spill into the rest of the spectrum}{table.caption.25}{}}
+\@writefile{toc}{\contentsline {paragraph}{The frequency loop sets the limit, not the canceller.}{12}{section*.27}\protected@file@percent }
+\bibcite{lindsey1981}{3}
+\bibcite{bodson1997}{4}
+\bibcite{kahan1965}{5}
+\bibcite{higham1993}{6}
+\bibcite{neumaier1974}{7}
+\bibcite{haykin2013}{8}
+\bibcite{pigg2010tcst}{9}
+\bibcite{pigg2010cdc}{10}
+\bibcite{sanders2007}{11}
+\bibcite{khalil2002}{12}
+\bibcite{ljung1999}{13}
+\bibcite{sastry1989}{14}
+\bibcite{francis1976}{15}
+\@writefile{lof}{\contentsline {figure}{\numberline {6}{\ignorespaces Ten vibrations, ten channels. (a) Residual RMS per mode with and without AVC, annotated in dB. (b) The calibrated plant against frequency: a resonance near 45\,Hz where the phase turns over. (c) The frequency estimates: at $g_\omega =0.2$ the 44\,Hz channel leaves its lock and runs away, at $g_\omega =0.05$ all ten hold to 0.01\,Hz.}}{13}{figure.caption.26}\protected@file@percent }
+\newlabel{fig:multimode}{{6}{13}{Ten vibrations, ten channels. (a) Residual RMS per mode with and without AVC, annotated in dB. (b) The calibrated plant against frequency: a resonance near \SI {45}{Hz} where the phase turns over. (c) The frequency estimates: at $g_\omega =0.2$ the \SI {44}{Hz} channel leaves its lock and runs away, at $g_\omega =0.05$ all ten hold to \SI {0.01}{Hz}}{figure.caption.26}{}}
+\gdef \@abspage@last{13}

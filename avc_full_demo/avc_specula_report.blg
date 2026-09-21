@@ -1,0 +1,46 @@
+This is BibTeX, Version 0.99d (TeX Live 2025)
+Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
+The top-level auxiliary file: avc_specula_report.aux
+The style file: ieeetr.bst
+Database file #1: avc_report.bib
+You've used 19 entries,
+            1876 wiz_defined-function locations,
+            594 strings with 5985 characters,
+and the built_in function-call counts, 4837 in all, are:
+= -- 516
+> -- 129
+< -- 0
++ -- 52
+- -- 33
+* -- 313
+:= -- 659
+add.period$ -- 26
+call.type$ -- 19
+change.case$ -- 17
+chr.to.int$ -- 0
+cite$ -- 19
+duplicate$ -- 263
+empty$ -- 493
+format.name$ -- 33
+if$ -- 1209
+int.to.chr$ -- 0
+int.to.str$ -- 19
+missing$ -- 26
+newline$ -- 67
+num.names$ -- 19
+pop$ -- 60
+preamble$ -- 1
+purify$ -- 0
+quote$ -- 0
+skip$ -- 165
+stack$ -- 0
+substring$ -- 324
+swap$ -- 104
+text.length$ -- 0
+text.prefix$ -- 0
+top$ -- 0
+type$ -- 0
+warning$ -- 0
+while$ -- 50
+width$ -- 21
+write$ -- 200

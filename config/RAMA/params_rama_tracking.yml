@@ -1,0 +1,311 @@
+---
+# RAMA numerical twin, fast-moving-object (LEO tracking) case.
+#
+# Baseline: params_rama.yml (validated frame-by-frame against the OOPAO
+# ramatwin).  Optics, DM, KL basis, pyramid and calibration products are
+# IDENTICAL, so no recalibration is needed -- run make_rama_calib.py +
+# calib_rama_sn.yml + calib_rama_rec.yml once, as for params_rama.yml.
+#
+# What changes with respect to params_rama.yml:
+#   1. wind_speed / wind_direction  -> slew-induced effective wind (see below)
+#   2. AtmoEvolution -> AtmoInfiniteEvolution  (mandatory, see below)
+#   3. seeing 2.013" -> 1.0065" (r0 = 0.10 m, the RAMA nominal)
+#   4. the loop is a plain g = 0.4 integrator, as the validated baseline
+#
+# Run, from config/RAMA:
+#   specula params_rama_tracking.yml
+#
+# ==========================================================================
+# THE PHYSICS
+# ==========================================================================
+# While the telescope tracks an object at angular rate omega, the line of
+# sight sweeps through the atmosphere.  The pierce point at layer height h
+# moves at h*omega/cos(zenith) ON TOP OF the real wind, so
+#
+#     v_eff,i = | v_wind,i + h_i*omega/cos(zenith) * e_slew |    (vectors)
+#
+# For a LEO object at ~700 km passing overhead, omega = 0.61 deg/s:
+#
+#   layer        h [m]   Cn2    v_wind   v_eff     shift/frame
+#   ground           0   0.45      5.0     5.0        0.60 px
+#   1 km          1000   0.10      4.0    14.5        1.74 px
+#   5 km          5000   0.10      8.0    58.3        7.00 px
+#   10 km        10000   0.25     10.0   100.9       12.11 px
+#   12 km        12000   0.10      2.0   125.9       15.10 px
+#
+#   v_bar = 61.8 m/s    f_Greenwood = 263 Hz    tau0 = 0.51 ms
+#   (sidereal, for comparison:  6.4 m/s,  27 Hz,  4.9 ms)
+#
+# Note the SHAPE change, not just the scale: the ground layer (45% of the
+# Cn2) is untouched, while the 10+12 km layers (35% of the Cn2) go up by a
+# factor 10-60.  The disturbance becomes high-altitude dominated.  Scaling
+# wind_speed uniformly is NOT a proxy for this.
+#
+# Regenerate these numbers for any rate / elevation with:
+#   python slew_winds.py --rate 0.61 [--zenith 60] [--slew-dir 90]
+# ==========================================================================
+
+
+main:
+  class:             'SimulParams'
+  root_dir:          './calib/'
+  pixel_pupil:       72
+  pixel_pitch:       0.008333333
+  total_time:        4.0                      # [s] 4000 iterations, enough for PSDs
+  time_step:         0.001
+
+
+seeing:
+  class:             'WaveGenerator'
+  constant:          1.0065                   # ["] r0 = 0.10 m @500nm, RAMA nominal
+  # constant:        2.013                    # ["] r0 = 0.05 m, the ramatwin stress case.
+                                              # Combined with the slew this gives
+                                              # f_G = 957 Hz: the 1 kHz loop cannot
+                                              # close on it.  Expect divergence.
+
+
+# Effective wind, tracking rate 0.61 deg/s at zenith (LEO ~700 km overhead).
+# Produced by:  python slew_winds.py --rate 0.61
+wind_speed:
+  class:             'WaveGenerator'
+  constant:          [5.00, 14.50, 58.30, 100.91, 125.86]     # [m/s]
+  # sidereal baseline: [5., 4., 8., 10., 2.]
+
+
+wind_direction:
+  class:             'WaveGenerator'
+  constant:          [0.00, 85.11, 96.37, 94.60, 89.72]       # [degrees]
+  # sidereal baseline: [0., 72., 144., 216., 288.]
+  # The high layers all converge towards the slew direction (90 deg here),
+  # because h*omega swamps the local wind vector.
+
+
+ngs_source:
+  class:             'Source'
+  polar_coordinates: [0.0, 0.0]
+  magnitude:         -0.04
+  wavelengthInNm:    640
+  zero_point:        2.25631e-08
+  # A real LEO target is at finite range and its brightness varies by several
+  # magnitudes across a pass.  For a 700 km range add  height: 700000.0  --
+  # at D = 0.6 m that is a 64 nm P-V defocus, essentially static (the range
+  # rate makes it drift by ~1 nm/s), so the integrator absorbs it.  Sweep
+  # 'magnitude' over separate runs to cover the photometric range.
+
+
+science_source:
+  class:             'Source'
+  polar_coordinates: [0.0, 0.0]
+  magnitude:         -0.04
+  wavelengthInNm:    1550
+  zero_point:        1.99713e-09
+
+
+pupilstop:
+  class:             'Pupilstop'
+  tag:               'rama_pupil_calib_72p'
+
+
+# --------------------------------------------------------------------------
+# AtmoInfiniteEvolution is MANDATORY here, not a preference.
+#
+# AtmoEvolution translates a finite, pre-generated screen.  At 15 px/frame a
+# 0.9 m layer (108 px) is consumed in 7 frames; covering 4 s at 126 m/s would
+# need 500 m of screen (60000 px).  Cycling it instead would make the
+# disturbance periodic with a ~7 ms period, right inside the control band.
+#
+# AtmoInfiniteEvolution extrudes new rows/columns on demand (Assemat/Fried
+# recursion), so there is no length limit and no periodicity.  It is a
+# drop-in: same parameters, same inputs, same layer_list output, and it
+# applies the same sqrt(Cn2) scaling.
+#
+# It also does NOT rotate the layers -- it shifts by adding rows and columns
+# along the two axes -- so the rotation-clipping problem that forced
+# fov_in_m: 0.9 in params_rama.yml does not exist here.  fov_in_m is kept
+# anyway for margin: the internal screen is padded to 2^n+1 = 129 px for
+# both 72 and 108, so it costs nothing.
+#
+# CAVEAT: the fractional part of the shift is still handled by linear
+# interpolation, exactly as in AtmoEvolution, so the sub-pixel aliasing
+# artifact is still present.  With these speeds the fractional parts are
+# 0.60 / 0.74 / 1.00 / 0.11 / 0.10 px/frame, putting spurious lines at
+# 400 / 260 / (none) / 109 / 103 Hz.  The 103-109 Hz pair from the two
+# strongest slewed layers lands ON the loop crossover.  Verify any modal
+# PSD feature in that region against a run at a slightly different rate
+# before attributing it to real turbulence.
+# --------------------------------------------------------------------------
+atmo:
+  class:                'AtmoInfiniteEvolution'
+  simul_params_ref:     'main'
+  L0:                   30
+  heights:              [0., 1000., 5000., 10000., 12000.]
+  Cn2:                  [0.45, 0.10, 0.10, 0.25, 0.10]
+  fov:                  0.0
+  fov_in_m:             0.9
+  seed:                 10
+  inputs:
+    seeing: 'seeing.output'
+    wind_speed: 'wind_speed.output'
+    wind_direction: 'wind_direction.output'
+  outputs: ['layer_list']
+
+
+prop:
+  class:                'AtmoPropagation'
+  simul_params_ref:     'main'
+  source_dict_ref:      ['ngs_source', 'science_source']
+  inputs:
+    atmo_layer_list: ['atmo.layer_list']
+    common_layer_list: ['pupilstop',
+                        'dm.out_layer:-1']
+    # Mount tracking jitter / windshake goes here, WITHOUT the ':-1' (only
+    # the correcting DM is delayed):  'dm_jitter.out_layer'
+  outputs: ['out_ngs_source_ef', 'out_science_source_ef']
+
+
+# --------------------------------------------------------------------------
+# MOUNT TRACKING JITTER -- NOT ENABLED, needs real data.
+#
+# Slewing at ~0.6 deg/s excites the mount, and for satellite tracking this is
+# frequently the DOMINANT tip/tilt disturbance.  It is entirely absent from
+# the OOPAO twin.  Enabling it with an invented PSD would produce numbers
+# that look authoritative and mean nothing, so it is left off here.
+#
+# With measured RAMA mount telemetry from a tracked pass (preferred):
+#
+#   tracking_jitter:
+#     class:            'TimeHistoryGenerator'
+#     time_hist_object: '<tag of the 2-column tip/tilt history, in nm>'
+#     outputs: ['output']
+#
+# With a synthetic PSD instead (freq in Hz, psd in nm^2/Hz, one row per mode):
+#
+#   tracking_jitter:
+#     class:             'VibrationGenerator'
+#     simul_params_ref:  'main'
+#     nmodes:            2
+#     freq:              [ ... ]
+#     psd:               [ [ ... ], [ ... ] ]
+#     seed:              1987
+#     outputs: ['output']
+#
+# Either way, the disturbance is injected through its own Zernike DM:
+#
+#   dm_jitter:
+#     class:             'DM'
+#     simul_params_ref:  'main'
+#     type_str:          'zernike'
+#     nmodes:            2
+#     sign:              1
+#     height:            0
+#     inputs:
+#       in_command: 'tracking_jitter.output'
+#     outputs: ['out_layer']
+#
+# then add 'dm_jitter.out_layer' to prop.common_layer_list above.
+# --------------------------------------------------------------------------
+
+
+pyramid:
+  class:             'ModulatedPyramid'
+  simul_params_ref:  'main'
+  pup_diam:          36.
+  pup_dist:          52.
+  fov:               16.0
+  mod_amp:           0.0
+  output_resolution: 120
+  wavelengthInNm:    640
+  inputs:
+    in_ef: 'prop.out_ngs_source_ef'
+
+
+detector:
+  class:             'CCD'
+  simul_params_ref:  'main'
+  size:              [120, 120]
+  dt:                0.001
+  bandw:             150
+  photon_noise:      True
+  readout_noise:     False
+  quantum_eff:       1.0
+  inputs:
+    in_i: 'pyramid.out_i'
+
+
+slopec:
+  class:             'PyrSlopec'
+  pupdata_object:    'rama_pupdata_ff'
+  sn_object:         'rama_sn_ff'
+  slopes_from_intensity: True
+  inputs:
+    in_pixels:       'detector.out_pixels'
+  outputs: ['out_slopes']
+
+
+rec:
+  class:              'Modalrec'
+  recmat_object:      'rama_rec_ff'
+  inputs:
+    in_slopes:        'slopec.out_slopes'
+  outputs: ['out_modes']
+
+
+# Validated baseline controller: plain integrator, g = 0.4, 2-frame loop
+# (delay: 1 plus the one frame from 'dm.out_layer:-1').  This is the
+# reference the tracking case should be judged against -- the whole point
+# of the exercise is that a controller tuned on the sidereal disturbance
+# may not survive a 10x faster one.
+control:
+  class:             'Integrator'
+  delay:             1
+  int_gain:          [0.4]
+  n_modes:           [83]
+  inputs:
+      delta_comm: 'rec.out_modes'
+
+
+dm:
+  class:             'DM'
+  simul_params_ref:  'main'
+  ifunc_object:      'rama_dm97_72p'
+  m2c_object:        'rama_kl_90'
+  nmodes:            83
+  sign:              -1
+  height:            0
+  inputs:
+      in_command: 'control.out_comm'
+
+
+# Uncorrected phase on the same source, for the rejection analysis
+# (|RTF|^2 = PSD(res)/PSD(ol) in cmp/compare_multi.py).
+prop_ol:
+  class:                'AtmoPropagation'
+  simul_params_ref:     'main'
+  source_dict_ref:      ['ngs_source']
+  inputs:
+    atmo_layer_list:   ['atmo.layer_list']
+    common_layer_list: ['pupilstop']
+  outputs: ['out_ngs_source_ef']
+
+
+psf:
+  class:             'PSF'
+  simul_params_ref:  'main'
+  wavelengthInNm:    1550
+  nd:                8
+  start_time:        0.3                      # [s] skip the loop transient
+  inputs:
+      in_ef:  'prop.out_science_source_ef'
+  outputs: ['out_psf', 'out_sr']
+
+
+data_store:
+  class:             'DataStore'
+  store_dir:         './output'
+  inputs:
+    input_list: ['res_ef-prop.out_ngs_source_ef',
+                 'ol_ef-prop_ol.out_ngs_source_ef',
+                 'slopes-slopec.out_slopes',
+                 'comm-control.out_comm',
+                 'sr-psf.out_sr',
+                 'modes-rec.out_modes']

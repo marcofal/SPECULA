@@ -28,6 +28,23 @@ class TestDM(unittest.TestCase):
                pupilstop=pupilstop, target_device_idx=target_device_idx)
 
     @cpu_and_gpu
+    def test_misregistration(self, target_device_idx, xp):
+        '''Misregistration goes to the DM layer; the layer amplitude becomes 1 so the
+        pupilstop alone defines the pupil'''
+        simul_params = SimulParams(time_step=2, pixel_pupil=10, pixel_pitch=1)
+        pupilstop = Pupilstop(simul_params, target_device_idx=target_device_idx)
+        dm = DM(simul_params, height=0, type_str='zernike', nmodes=4, pupilstop=pupilstop,
+                target_device_idx=target_device_idx)
+        self.assertFalse(dm.misregistered)
+        assert_array_almost_equal(cpuArray(dm.layer.A), cpuArray(pupilstop.A))
+        dm = DM(simul_params, height=0, type_str='zernike', nmodes=4, pupilstop=pupilstop,
+                shiftXYinPixel=(1.0, 0.0), rotInDeg=3.0, target_device_idx=target_device_idx)
+        self.assertTrue(dm.misregistered)
+        self.assertEqual(dm.layer.rotInDeg, 3.0)
+        assert_array_almost_equal(cpuArray(dm.layer.shiftXYinPixel), [1.0, 0.0])
+        self.assertTrue(bool((cpuArray(dm.layer.A) == 1).all()))
+
+    @cpu_and_gpu
     def test_dm_nmodes_is_mandatory_with_zernike(self, target_device_idx, xp):
         '''Test that the nmodes parameter is mandatory with DM of zernike type'''
         simul_params = SimulParams(time_step = 2, pixel_pupil=10, pixel_pitch=1)

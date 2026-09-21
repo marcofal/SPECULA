@@ -14,6 +14,8 @@ that SPECULA instead expects as a calibration file is produced here:
                                 atmospheric statistics (OOPAO: compute_KL_basis)
   pupilstop/<tag>_calib.fits    calibration pupil (clear disk)
   pupilstop/<tag>_sky.fits      on-sky pupil (0.34 central obstruction + spiders)
+  pupils/<tag>_pupdata_ff.fits  full-frame pyramid signal: the four 60x60
+                                detector quadrants (OOPAO fullFrame_sum_flux)
 
 The influence-function interpolation reproduces OOPAO's
 `OOPAO.tools.interpolateGeometricalTransformation.interpolate_cube` (vendored
@@ -40,6 +42,7 @@ from astropy.io import fits
 N_SUBAP = 36                     # PWFS subapertures across the pupil
 N_PIX_PER_SUBAP = 2              # phase-screen sampling per subaperture
 RESOLUTION = N_SUBAP * N_PIX_PER_SUBAP        # 72 pixels across the pupil
+FRAME_SIZE = 120                 # PWFS detector, 2 * size_quadrant_ramatwin
 DIAMETER = 0.6                   # [m] telescope diameter
 PIXEL_PITCH = DIAMETER / RESOLUTION           # [m/pixel]
 
@@ -191,13 +194,14 @@ def main():
     specula.init(-1, precision=0)   # CPU, double precision
     from specula.data_objects.ifunc import IFunc
     from specula.data_objects.m2c import M2C
+    from specula.data_objects.pupdata import PupData
     from specula.data_objects.pupilstop import Pupilstop
     from specula.data_objects.simul_params import SimulParams
     from specula.lib.make_mask import make_mask
     from specula.lib.modal_base_generator import make_modal_base_from_ifs_fft
 
     root = os.path.abspath(args.root_dir)
-    for sub in ('ifunc', 'm2c', 'pupilstop'):
+    for sub in ('ifunc', 'm2c', 'pupilstop', 'pupils'):
         os.makedirs(os.path.join(root, sub), exist_ok=True)
 
     # ---------------- influence functions -------------------------------
@@ -290,6 +294,30 @@ def main():
     print(f'  wrote {sky_file}   (obs {CENTRAL_OBSTRUCTION} + 4 spiders, '
           f'{int(sky_mask.sum())} px)')
 
+    # ---------------- full-frame pyramid signal -----------------------------
+    # OOPAO 'fullFrame_sum_flux' with lightRatio = 0 uses every pixel of the
+    # 120x120 frame, normalised by the total flux.  Declaring the four 60x60
+    # detector quadrants as the "pupils" makes PyrSlopec (slopes_from_intensity)
+    # do exactly that.  With the thresholded pupils of calib_rama_pupdata.yml
+    # (4408 px) the unmodulated closed-loop gain comes out 1.2-1.6x higher than
+    # in OOPAO, because the light the pyramid diffracts outside the geometric
+    # pupils is thrown away.
+    # Quadrant order A, B, C, D = top-right, top-left, bottom-left, bottom-right,
+    # the same order PyrPupdataCalibrator finds for this pyramid.
+    q = FRAME_SIZE // 2
+    frame_idx = np.arange(FRAME_SIZE * FRAME_SIZE).reshape(FRAME_SIZE, FRAME_SIZE)
+    quadrants = [frame_idx[:q, q:], frame_idx[:q, :q], frame_idx[q:, :q], frame_idx[q:, q:]]
+    ind_pup = np.stack([quad.ravel() for quad in quadrants], axis=1)
+    pupdata = PupData(ind_pup=ind_pup,
+                      radius=[N_SUBAP / 2] * 4,
+                      cx=[q + q / 2, q / 2, q / 2, q + q / 2],
+                      cy=[q / 2, q / 2, q + q / 2, q + q / 2],
+                      framesize=[FRAME_SIZE, FRAME_SIZE])
+    pupdata_tag = f'{args.tag}_pupdata_ff'
+    pupdata_file = os.path.join(root, 'pupils', pupdata_tag + '.fits')
+    pupdata.save(pupdata_file, overwrite=args.overwrite)
+    print(f'  wrote {pupdata_file}   (4 x {ind_pup.shape[0]} px, full frame)')
+
     # ---------------- photometry ------------------------------------------
     print('\nSource zero points reproducing the OOPAO flux at magnitude '
           f'{MAGNITUDE} (put these in the yml):')
@@ -304,6 +332,7 @@ def main():
     print(f'  ifunc_object:     {ifunc_tag!r}')
     print(f'  m2c_object:       {m2c_tag!r}')
     print(f'  pupilstop_object: {calib_tag!r} / {sky_tag!r}')
+    print(f'  pupdata_object:   {pupdata_tag!r}')
     print(f'  DM sign in the yml: {DM_SIGN}')
 
 

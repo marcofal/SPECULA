@@ -1,0 +1,331 @@
+# Minimal AVC demo: identical loop to params_scao_avc_full_demo.yml, but the
+# AVC module is the reduced AVCSimplified object -- plant frozen at its
+# calibration, no regulariser, no cost function. See section 4 of
+# avc_specula_report.pdf. Swept over plant phase error by run_avc_simplified.py.
+---
+# Full closed-loop SCAO simulation, single NGS, with a manually injected
+# narrow-band mechanical vibration and AVC (Adaptive Vibration
+# Cancellation) active in the loop.
+#
+# Structure/inspiration: this mirrors how params_morfeo_single_ngs_mini.yml
+# builds a complete pipeline (atmosphere -> propagation -> WFS -> detector
+# -> slope computation -> reconstruction -> temporal control -> DM -> PSF),
+# plus a dedicated vibration source summed into the pupil independently of
+# the atmosphere and the main loop (there: 'windshake_M2' via
+# TimeHistoryGenerator + dm_M2; here: 'vib_wave' via WaveGenerator +
+# 'vib_dm'). Unlike that file, this one is fully self-contained: it reuses
+# the small, repo-bundled SCAO calibration set (64px pupil, 8x8 SH, 40
+# Zernike modes) instead of MORFEO's proprietary/production calibration
+# files (mask_160px_6petals, M2 windshake time history, MORFEO IM/REC,
+# etc.), which are not available in this environment. The physical loop
+# (atmo/WFS/integrator/DM/PSF) is otherwise the same one validated in
+# SPECULA's own test suite (test/params_scao_sh_test.yml).
+#
+# Run with (from this folder):
+#
+#   import specula
+#   specula.init(0, precision=1)
+#   from specula.simul import Simul
+#   Simul('params_scao_avc_full_demo.yml').run()
+#
+# or from the command line:
+#
+#   specula params_scao_avc_full_demo.yml
+#
+# See README.md in this folder for what to expect and an important caveat
+# about AVC gain tuning in closed loop.
+
+main:
+  class:             'SimulParams'
+  root_dir:          './calib'              # Root directory for calibration manager
+  pixel_pupil:       64                     # Linear dimension of pupil phase array
+  pixel_pitch:       0.015625               # [m] Pitch of the pupil phase array
+  total_time:        10.000                  # [s] Total simulation running time (~140 vibration cycles)
+  time_step:         0.001                  # [s] Simulation time step
+
+
+# ---------------------------------------------------------------
+# Atmosphere
+# ---------------------------------------------------------------
+
+seeing:
+  class:             'WaveGenerator'
+  constant:          0.6                    # ["] seeing value
+  wave_type:         'SIN'
+  outputs: ['output']
+
+wind_speed:
+  class:             'WaveGenerator'
+  constant:          [5.]                   # [m/s] Wind speed value
+  outputs: ['output']
+
+wind_direction:
+  class:             'WaveGenerator'
+  constant:          [10.]                  # [degrees] Wind direction value
+  outputs: ['output']
+
+atmo:
+  class:                'AtmoEvolution'
+  simul_params_ref:     'main'
+  L0:                   25                  # [m] Outer scale
+  heights:              [0.]                # [m] layer heights at 0 zenith angle
+  Cn2:                  [1.00]              # Cn2 weights (total must be eq 1)
+  fov:                  0.0
+  pixel_phasescreens:   1024                # number of pixels in the phase screens
+  inputs:
+    seeing: 'seeing.output'
+    wind_speed: 'wind_speed.output'
+    wind_direction: 'wind_direction.output'
+  outputs: ['layer_list']
+
+
+# ---------------------------------------------------------------
+# Source, pupil
+# ---------------------------------------------------------------
+
+on_axis_source:
+  class:             'Source'
+  polar_coordinates:  [0.0, 0.0]            # [arcsec, degrees] source polar coordinates
+  magnitude:         5                      # source magnitude
+  wavelengthInNm:    600                    # [nm] wavelength
+
+pupilstop:                                  # Default parameters (circular pupil)
+  class: 'Pupilstop'
+  simul_params_ref:     'main'
+
+
+# ---------------------------------------------------------------
+# Mechanical vibration injection (independent of atmosphere and of the
+# main loop's own correction, exactly like a real telescope/instrument
+# vibration would enter the pupil - c.f. windshake_M2/dm_M2 in
+# params_morfeo_single_ngs_mini.yml)
+# ---------------------------------------------------------------
+
+vib_wave:
+  class:             'WaveGenerator'
+  wave_type:         'SIN'
+  amp:               [120.0]                # [nm] vibration amplitude. Modest ON PURPOSE: at 47 Hz the
+                                            # closed loop AMPLIFIES by ~+12 dB (|S|~4.2, the waterbed
+                                            # peak sits at ~45 Hz), so 50 nm in becomes ~185 nm of
+                                            # residual -- large enough to dominate the corrected
+                                            # atmosphere, small enough to keep the SH WFS linear.
+                                            # 500 nm here drives the residual to ~2000 nm and the WFS
+                                            # saturates, which invalidates every measurement.
+  freq:              [47.0]                 # [Hz] vibration frequency
+  outputs: ['output']
+
+vib_dm:
+  class:             'DM'
+  simul_params_ref:  'main'
+  type_str:          'zernike'
+  idx_modes:         [0]                    # mode 0 (0-indexed) = Noll 2 = tip
+  obsratio:          0.1
+  height:            0
+  inputs:
+    in_command: 'vib_wave.output'
+  outputs: ['out_layer']
+
+
+# ---------------------------------------------------------------
+# Propagation: atmosphere + main DM correction (frame-delayed, ':-1', to
+# break the algebraic loop) + vibration, all summed into the same pupil
+# ---------------------------------------------------------------
+
+prop:
+  class:                'AtmoPropagation'
+  simul_params_ref:     'main'
+  source_dict_ref:      ['on_axis_source']
+  inputs:
+    atmo_layer_list: ['atmo.layer_list']
+    common_layer_list: ['pupilstop',
+                  'dm.out_layer:-1',
+                  'vib_dm.out_layer']
+  outputs: ['out_on_axis_source_ef']
+
+
+# ---------------------------------------------------------------
+# WFS chain: SH sensor -> CCD -> slope computer -> modal reconstructor
+# ---------------------------------------------------------------
+
+sh:
+  class:             'SH'
+  subap_wanted_fov:  4.0                    # Requested field-of-view [arcsec]
+  sensor_pxscale:    0.5                    # Pixel scale in arcsec/pix
+  subap_npx:         8                      # Output sampling [usually corresponding to CCD pixels]
+  subap_on_diameter: 8                      # Number of subapertures in diameter
+  wavelengthInNm:    600                    # [nm] SH wavelength
+  inputs:
+    in_ef: 'prop.out_on_axis_source_ef'
+  outputs:  ['out_i']
+
+detector:
+  class:             'CCD'
+  simul_params_ref:  'main'
+  size:              [64,64]                # Detector size in pixels
+  dt:                0.001                  # [s] Detector integration time
+  bandw:             300                    # [nm] Sensor bandwidth
+  photon_noise:      True                   # activate photon noise
+  readout_noise:     True                   # activate readout noise
+  readout_level:     1.0                    # readout noise in [e-/pix/frame]
+  quantum_eff:       0.3                    # quantum efficiency * total transmission
+  inputs:
+    in_i: 'sh.out_i'
+  outputs:  ['out_pixels']
+
+slopec:
+  class:             'ShSlopec'
+  subapdata_object:  'scao_subaps_n8_th0.5'  # tag of the SH WFS pupils (bundled in ./calib)
+  weightedPixRad:    4.0
+  inputs:
+    in_pixels:        'detector.out_pixels'
+  outputs:  ['out_slopes', 'out_subapdata']
+
+rec:
+  class:              'Modalrec'
+  recmat_object:      'scao_rec_n8_th0.5'    # reconstruction matrix tag (bundled in ./calib)
+  inputs:
+    in_slopes:        'slopec.out_slopes'
+  outputs:  ['out_modes']
+
+
+# ---------------------------------------------------------------
+# Main temporal controller (standard integrator, all 40 modes)
+# ---------------------------------------------------------------
+
+control:
+  class:             'Integrator'
+  delay:             2                      # Total temporal delay in time steps
+  int_gain:          [0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,
+                      0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,
+                      0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,
+                      0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5]
+  inputs:
+      delta_comm: 'rec.out_modes'
+  outputs:  ['out_comm']
+
+
+# ---------------------------------------------------------------
+# AVC: runs in PARALLEL with the main integrator (the architecture of
+# Fig. 1 in Muradore et al.), acting only on mode 0 (tip, the vibrating
+# mode). The integrator rejects the low-frequency atmosphere on all 40
+# modes; AVC handles the narrow-band vibration peak, which sits ABOVE the
+# integrator's bandwidth where the rejection transfer function actually
+# AMPLIFIES the disturbance (the paper makes the same point about its
+# 48 Hz NACO vibration). Their commands are summed by comm_combiner and
+# pass through the 'lowpass' actuator/DM filter before reaching the DM.
+#
+# x0/x1 MUST be re-measured whenever the loop changes, and closing the
+# integrator changes them a lot: the transfer from an AVC command to the
+# measured residual is now multiplied by the closed-loop sensitivity
+# S = 1/(1+HOL) of the integrator loop. They are MEASURED from telemetry
+# with params_measure_plant.yml (which contains the same integrator), not
+# taken from the analytic calibrate_avc.py, whose sign convention does not
+# match SPECULA's wiring -- see README.md.
+# ---------------------------------------------------------------
+
+mode_slicer:
+  class:             'BaseSlicer'
+  indices:           0                      # mode 0 = tip, same as vib_dm's idx_modes
+  inputs:
+    in_value: 'rec.out_modes'
+  outputs: ['out_value']
+
+avc:
+  class:             'AVCSimplified'
+  simul_params_ref:  'main'
+  n_avc:             1
+  freq:              [45]                 # [Hz] initial guess, deliberately off the true 47.0
+                                          # (in practice supplied by find_vib_peaks)
+  gx:                3.0                  # disturbance integrator gain. Convergence rate is
+                                          # 0.5*gx*Re(kappa) [1/s]; ~2 s here.
+  gomega:            0.2                  # PLL rate. Re-tune with the vibration SNR; 0 holds the
+                                          # frequency fixed at 'freq'.
+  k:                 1.0
+  plant_re:          -7.102731            # MEASURED CLOSED-LOOP from params_measure_plant.yml:
+  plant_im:          1.313658             # |P|=7.223, phase=+169.52 deg at 47 Hz. Only the PHASE
+                                          # matters for stability, and only to within +-90 deg;
+                                          # the magnitude just sets the convergence rate.
+                                          # Equivalently: plant_gain: 7.223, plant_phase: 169.52
+  inputs:
+    in_measurement: 'mode_slicer.out_value'
+  outputs: ['out_comm', 'out_freq', 'out_state']
+avc_inserter:
+  class:             'BaseInserter'
+  output_size:        40                    # must match dm/control nmodes
+  slice_args:        [[0, 1], [0, 1]]        # insert avc.out_comm[0:1] into mode 0
+  inputs:
+    in_value: 'avc.out_comm'
+  outputs: ['out_value']
+
+comm_combiner:
+  class:             'BaseOperation'
+  sum:               True
+  inputs:
+    in_value1: 'control.out_comm'
+    in_value2: 'avc_inserter.out_value'
+  outputs: ['out_value']
+
+
+# ---------------------------------------------------------------
+# Actuator/DM low-pass: models the DM as a first-order low-pass filter
+# instead of an ideal, instantaneous mirror. Without this, the loop's only
+# dynamics are a near-unit-gain, near-zero-phase one-frame delay (almost
+# an allpass at the vibration frequency) -- a poorly conditioned target
+# for AVC's own plant-identification step (see README.md). cutoff_freq
+# must match LPF_FC in calibrate_avc.py.
+# ---------------------------------------------------------------
+
+lowpass:
+  class:             'LowPassFilter'
+  simul_params_ref:  'main'
+  cutoff_freq:       [80.0]
+  n_ord:             1
+  n_modes:           40
+  delay:             0
+  inputs:
+    delta_comm: 'comm_combiner.out_value'
+  outputs: ['out_comm']
+
+
+# ---------------------------------------------------------------
+# Main DM: receives the (low-pass filtered) AVC correction
+# ---------------------------------------------------------------
+
+dm:
+  class:             'DM'
+  simul_params_ref:  'main'
+  type_str:          'zernike'              # modes type
+  nmodes:            40                     # number of modes
+  obsratio:          0.1                    # obstruction dimension ratio w.r.t. diameter
+  height:            0                      # DM height [m]
+  inputs:
+      in_command: 'lowpass.out_comm'
+  outputs:  ['out_layer']
+
+
+# ---------------------------------------------------------------
+# Science image / diagnostics
+# ---------------------------------------------------------------
+
+# psf:
+#   class:             'PSF'
+#   simul_params_ref:  'main'
+#   wavelengthInNm:    1650                   # [nm] Imaging wavelength
+#   nd:                8                      # padding coefficient for PSF computation
+#   start_time:        0.0                    # PSF integration start time
+#   inputs:
+#       in_ef:  'prop.out_on_axis_source_ef'
+#   outputs:  ['out_psf', 'out_sr']
+
+data_store:
+  class:             'DataStore'
+  store_dir:         './output/with_AVC_simplified'             # Data result directory: 'store_dir'/TN/
+  inputs:
+    input_list: [
+      # 'res_sr-psf.out_sr',
+                 'res_modes-rec.out_modes',
+                #  'res_comm-control.out_comm',
+                 'avc_freq-avc.out_freq',
+                 'avc_comm-avc.out_comm',
+                 'avc_state-avc.out_state',
+                 'vib-vib_wave.output']

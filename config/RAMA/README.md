@@ -20,8 +20,9 @@ Everything below comes from `parameter_files/parameterFile_ramatwin.py`.
 |---|---|
 | `make_rama_calib.py` | converts the RAMA bench data into SPECULA calibration objects (DM influence functions, KL basis, pupil masks) |
 | `params_rama.yml` | the simulation itself |
-| `calib_rama_pupdata.yml` | override: finds the 4 pyramid pupils on the detector |
+| `calib_rama_sn.yml` | override: slope null (flat-wavefront reference) at modulation 0 |
 | `calib_rama_rec.yml` | override: KL interaction matrix + reconstructor |
+| `calib_rama_pupdata.yml` | optional override: thresholded pyramid pupils, to inspect the geometry (not used by the loop) |
 | `validate_against_oopao.py` | drives both codes with the same DM commands and compares the pyramid frames |
 
 ## Where the input data comes from
@@ -49,13 +50,15 @@ standing between a fresh clone and a working model.
 
 ## How to run
 
-Four commands, from the repository root:
+Four commands, from `config/RAMA` (`root_dir: './calib/'` and the output
+directory are relative to where `specula` is launched):
 
 ```bash
-python config/RAMA/make_rama_calib.py --if-file ~/Documents/Repos/rama_data/IF_97.npy
-specula config/RAMA/params_rama.yml config/RAMA/calib_rama_pupdata.yml
-specula config/RAMA/params_rama.yml config/RAMA/calib_rama_rec.yml
-specula config/RAMA/params_rama.yml
+cd config/RAMA
+python make_rama_calib.py --if-file ~/Documents/Repos/rama_data/IF_97.npy --root-dir calib
+specula params_rama.yml calib_rama_sn.yml
+specula params_rama.yml calib_rama_rec.yml
+specula params_rama.yml
 ```
 
 What each step writes into `calib/`:
@@ -66,15 +69,17 @@ What each step writes into `calib/`:
 | | `m2c/rama_kl_90.fits` | KL modal basis |
 | | `pupilstop/rama_pupil_calib_72p.fits` | calibration pupil |
 | | `pupilstop/rama_pupil_sky_72p.fits` | on-sky pupil |
-| `calib_rama_pupdata.yml` | `pupils/rama_pupdata.fits` | the 4 pyramid pupils |
-| `calib_rama_rec.yml` | `im/rama_im.fits`, `rec/rama_rec.fits` | interaction matrix, reconstructor |
+| | `pupils/rama_pupdata_ff.fits` | full-frame pyramid signal (4 x 60x60 quadrants) |
+| `calib_rama_sn.yml` | `slopenulls/rama_sn_ff.fits` | reference signal at modulation 0 |
+| `calib_rama_rec.yml` | `im/rama_im_ff.fits`, `rec/rama_rec_ff.fits` | interaction matrix, reconstructor |
 
-The steps are ordered: the interaction matrix needs the pupil data, which needs
-the influence functions. Re-run `make_rama_calib.py` and then both calibration
-steps whenever you change a mis-registration, the pupil, or the modal basis.
+The steps are ordered: the interaction matrix needs the slope null and the pupil
+data, which need the influence functions. Re-run `make_rama_calib.py` and then
+both calibration steps whenever you change a mis-registration, the pupil, or
+the modal basis.
 
-The last command closes the loop for 500 iterations and reaches SR ~0.92 at
-1550 nm for the nominal r0 = 0.10 m.
+With a plain integrator (gain 0.4 on all 83 modes, `delay: 1`) at the
+tutorial's seeing of 2.013" the loop reaches SR ~0.90 at 1550 nm.
 
 ## Validation against OOPAO
 
@@ -127,13 +132,52 @@ illuminated pixels above 1 % of the peak differs accordingly (OOPAO 9136,
 SPECULA 8760). The per-quadrant flux split is 0.2500 / 0.2500 / 0.2500 / 0.2500
 in both codes.
 
-### What is still not validated
+## Closed-loop validation against OOPAO
 
-The comparison is **static**. Not checked: the atmosphere (the two codes
-generate different phase screens, so a like-for-like test needs the same screen
-injected into both), the temporal behaviour of the loop, the photon noise
-statistics, and the absolute Strehl. The SR ~0.92 quoted above is a SPECULA
-number with no OOPAO counterpart.
+The static checks above do not exercise the loop, and the first closed-loop
+comparison (OOPAO `ramatwin.py` loop vs this port, integrator gain 0.4,
+seeing 2.013") found four real differences. All are fixed in the files here:
+
+| difference | symptom | fix |
+|---|---|---|
+| **Loop delay.** The DM layer enters the propagation as `dm.out_layer:-1`, so the total delay is `delay + 1` | noiseless step response: first correction one frame later than OOPAO; with a static aberration the 3-frame loop diverges | `delay: 1` (= `frame_delay = 2`) |
+| **Signal pixels.** OOPAO `fullFrame_sum_flux` with `lightRatio = 0` uses all 14400 pixels; the thresholded pupils keep 4408 | identical at modulation 1 (calibration), but at modulation 0 (loop) the reconstruction gain was 1.2-1.6x OOPAO's | `rama_pupdata_ff`: the 4 detector quadrants |
+| **Reference signal.** OOPAO recomputes its reference when `wfs.modulation` is set back to 0 | a flat wavefront converges to a ~16 nm rms self-inflicted static aberration | `rama_sn_ff` slope null at modulation 0 |
+| **Atmosphere layers.** Pupil-sized layers are rotated for the non-90 deg wind directions and the rotated-out corners are zero-filled | um-level phase steps on the outermost pupil ring; uncorrectable residual 130 nm instead of 58 nm | `atmo.fov_in_m: 0.9` |
+
+After the fixes, on identical DM commands without noise the step responses
+agree frame by frame (effective loop gain ratio 0.99-1.04 on modes 0-50), and in
+turbulence (3 seeds x 4 s) the rejection transfer functions agree within ~1 dB
+from 2 to 500 Hz once SPECULA uses OOPAO's KL basis.
+
+### What is still different
+
+* **KL basis.** OOPAO's `compute_KL_basis` and `make_modal_base_from_ifs_fft`
+  do not select the same 83-mode control space (see "Modal basis" below). With
+  `rama_kl_90` the SPECULA loop corrects better than the twin (residual ~78 nm vs
+  ~108 nm); with OOPAO's M2C it reproduces the twin's low-frequency residual.
+* **Atmosphere statistics.** Against the von Karman structure function
+  (r0 = 5 cm, L0 = 30 m) OOPAO's screens agree within ~5 %; SPECULA's come out
+  ~10 % low at pupil scales on average, with a much larger seed-to-seed spread,
+  and ~25 % low at 1 px (sub-pixel shift interpolation). The residual in SPECULA
+  is correspondingly ~13 % lower. Not resolved.
+* The phase-screen cache key rounds the pixel pitch to 3 decimals
+  (`pixpit0.008`), so a screen generated for a different pitch with the same
+  seed, size and L0 would be silently reused.
+
+### Custom IIR controllers
+
+`IirFilter` evaluates
+
+    y_k den[-1] = sum_j num[j] x_(k-(len(num)-1-j)) - sum_j den[j] y_(k-(len(den)-1-j))
+
+with coefficients lowest order first, so the implemented transfer function is
+`z^(len(den)-len(num)) N(z)/D(z)`. **Give `num` and `den` the same length**
+(pad `num` with a trailing 0.0 on the highest-order side) to get `N(z)/D(z)`: a
+numerator one coefficient shorter removes one frame of loop delay. The
+integrator `num = [0, g], den = [-1, 1]` is unaffected. The tip/tilt filters in
+`params_rama.yml` were written as 20/21 coefficients and only worked with the
+old `delay: 2` because the two one-frame errors cancelled.
 
 ## Parameter mapping
 
@@ -150,13 +194,13 @@ number with no OOPAO counterpart.
 | `nSubaperture` + `n_pix_separation` | 36 + 16 | `pyramid.pup_dist` = 52 |
 | `size_quadrant_ramatwin` * 2 | 120 | `pyramid.output_resolution`, `detector.size` |
 | `modulation` | 0 | `pyramid.mod_amp` |
-| `postProcessing` = `fullFrame_sum_flux` | — | `slopec.slopes_from_intensity: True` |
+| `postProcessing` = `fullFrame_sum_flux`, `lightRatio` = 0 | full 120x120 frame | `slopec.slopes_from_intensity: True`, `pupdata_object: rama_pupdata_ff`, `sn_object: rama_sn_ff` |
 | `nActuator`, `dm_inf_funct_location` | 11 (97 acts), `IF_97.npy` | `dm.ifunc_object` (built by `make_rama_calib.py`) |
 | `dm_inf_funct_factor` | -1 | `dm.sign` |
 | `shiftX/shiftY`, `radial/tangentialScaling`, `dm_flip_ud` | see below | baked into the ifunc file |
 | `centralObstruction` 0.34 + spiders | on-sky pupil | `pupilstop` tag `rama_pupil_sky_72p` |
 | calibration pupil (clear disk) | `Rama.set_pupil(calibration=True)` | `pupilstop` tag `rama_pupil_calib_72p` (default) |
-| `gainCL`, `frame_delay`, `end_mode` (ramatwin.py) | 0.4, 2, 83 | `control.int_gain / delay / n_modes` |
+| `gainCL`, `frame_delay`, `end_mode` (ramatwin.py) | 0.4, 2, 83 | `control.int_gain` 0.4, `delay` **1**, `n_modes` 83 |
 
 ### DM influence functions
 
@@ -221,13 +265,6 @@ the log line "FoV reduction from X to Y" tells you the natural value.
   it needs its own sensitivity-matrix setup; nothing here uses it.
 * **Runtime pupil switching** (`Rama.set_pupil(calibration=...)`) is a config
   change here: swap the `pupilstop` tag.
-* **Valid-pixel selection.** OOPAO uses `lightRatio = 0`, and its own printout
-  confirms it keeps **14400** pixels, i.e. the entire 120x120 frame. The SPECULA
-  pupil calibrator thresholds at `thr1 = 0.1 / thr2 = 0.25` and keeps 1102
-  pixels per quadrant, 4408 in total. Lower the thresholds in
-  `calib_rama_pupdata.yml` to get closer to OOPAO's behaviour. This is a
-  difference in the *signal vector*, not in the detector frame, and the
-  validation above is unaffected by it (it works on the frames).
 * `psfCentering` (hardcoded `True` in `compute_ramatwin.py`) and `pwfs_rooftop`
   have no SPECULA equivalent. `pwfs_rooftop` is unused in OOPAO too — it is set
   in the parameter file but never passed to the `Pyramid` constructor.

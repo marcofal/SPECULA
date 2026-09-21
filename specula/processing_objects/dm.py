@@ -30,6 +30,9 @@ class DM(BaseProcessingObj):
                  pupilstop: Pupilstop=None,
                  sign: int=-1,
                  stroke=None,
+                 shiftXYinPixel: tuple=(0.0, 0.0),
+                 rotInDeg: float=0.0,
+                 magnification: float=1.0,
                  target_device_idx: int=None,
                  precision: int=None
                  ):
@@ -75,6 +78,18 @@ class DM(BaseProcessingObj):
             The maximum amplitude (in NANOMETERS) to which commands are clipped at. 
             If a list is given, this is the maximum amplitude that can be applied per mode.
             Default is None (no clipping applied).
+        shiftXYinPixel : tuple [pixels], optional
+            Misregistration of the DM with respect to the pupil: (x, y) shift of the
+            DM layer. Default (0, 0).
+        rotInDeg : float [deg], optional
+            Misregistration: rotation of the DM layer. Default 0.
+        magnification : float [1], optional
+            Misregistration: magnification of the DM layer. Default 1.
+            With any misregistration the DM layer amplitude is set to 1, so that the
+            pupil comes from the pupilstop layer alone and the moved DM mask does not
+            vignette it; outside its influence functions the DM applies no phase.
+            Calibrations made without misregistration are unaffected: use these
+            parameters in the closed-loop run only.
         target_device_idx : int [1], optional
             Target device index for computation (CPU/GPU). Default is None (uses global setting).
         precision : int [1], optional
@@ -147,8 +162,13 @@ class DM(BaseProcessingObj):
 
         self.if_commands_selector = slice(0, self.n_valid_modes)
 
-        self.layer = Layer(s[0], s[1], self.pixel_pitch, height, target_device_idx=target_device_idx, precision=precision)
+        self.layer = Layer(s[0], s[1], self.pixel_pitch, height, shiftXYinPixel=shiftXYinPixel,
+                           rotInDeg=rotInDeg, magnification=magnification,
+                           target_device_idx=target_device_idx, precision=precision)
         self.layer.A = self._ifunc.mask_inf_func
+        self.misregistered = bool(rotInDeg != 0 or any(v != 0 for v in shiftXYinPixel) or magnification != 1)
+        if self.misregistered:
+            self.layer.A = self.xp.ones_like(self.layer.A)
 
         self.nmodes = nmodes - start_mode   # Input command vector is not supposed to include the modes before "start_mode"
 

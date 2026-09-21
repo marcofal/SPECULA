@@ -1,7 +1,9 @@
 ---
-# Step 2 of the RAMA calibration: KL interaction matrix and reconstructor.
+# RAMA calibration: KL interaction matrix and reconstructor.
 #   specula params_rama.yml calib_rama_rec.yml
-# Produces  calib/im/rama_im.fits  and  calib/rec/rama_rec.fits
+# Produces  calib/im/rama_im_ff.fits  and  calib/rec/rama_rec_ff.fits
+# Needs the slope null (calib_rama_sn.yml) and the full-frame pupil data
+# (make_rama_calib.py) that params_rama.yml points to.
 #
 # OOPAO equivalent (ramatwin.py):
 #   InteractionMatrix(ngs, atm, tel, dm, wfs, M2C=M2C, stroke=1e-9)
@@ -40,7 +42,7 @@ detector_override:
 im_calibrator:
   class:             'ImCalibrator'
   nmodes:            83
-  im_tag:            'rama_im'
+  im_tag:            'rama_im_ff'
   overwrite:         True
   inputs:
     in_slopes:       'slopec.out_slopes'
@@ -50,9 +52,12 @@ im_calibrator:
 rec_calibrator:
   class:             'RecCalibrator'
   nmodes:            83
-  rec_tag:           'rama_rec'
+  rec_tag:           'rama_rec_ff'
   overwrite:         True
   inputs:
     in_intmat:       'im_calibrator.out_intmat'
 
-remove: ['atmo', 'rec', 'control', 'psf', 'data_store']
+# the display objects of params_rama.yml read from objects removed here; drop
+# them from this list if you delete them from params_rama.yml
+remove: ['atmo', 'rec', 'control', 'psf', 'data_store',
+         'ph_disp', 'pix_disp', 'psf_disp']

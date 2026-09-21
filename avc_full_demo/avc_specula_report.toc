@@ -1,0 +1,34 @@
+\contentsline {section}{\numberline {1}The algorithm}{1}{section.1}%
+\contentsline {subsection}{\numberline {1.1}State and control law}{2}{subsection.1.1}%
+\contentsline {paragraph}{The regularizer $\epsilon $.}{2}{section*.2}%
+\contentsline {subsection}{\numberline {1.2}Adaptation}{2}{subsection.1.2}%
+\contentsline {subsection}{\numberline {1.3}Implementation notes}{3}{subsection.1.3}%
+\contentsline {subsection}{\numberline {1.4}Parameters and internal states}{3}{subsection.1.4}%
+\contentsline {paragraph}{$c_x$ constant}{3}{section*.4}%
+\contentsline {paragraph}{$\alpha _c$ is the numerical correction.}{3}{section*.5}%
+\contentsline {section}{\numberline {2}Simulation in SPECULA}{4}{section.2}%
+\contentsline {subsection}{\numberline {2.1}Pipeline}{4}{subsection.2.1}%
+\contentsline {subsection}{\numberline {2.2}Why 47 Hz is the interesting place to put a vibration}{4}{subsection.2.2}%
+\contentsline {subsection}{\numberline {2.3}Calibrating the plant}{5}{subsection.2.3}%
+\contentsline {paragraph}{Stage 1: find the tone.}{5}{section*.7}%
+\contentsline {paragraph}{Stage 2: measure the response at that frequency.}{5}{section*.8}%
+\contentsline {paragraph}{Status in this work.}{5}{section*.9}%
+\contentsline {subsection}{\numberline {2.4}Best configuration and results}{5}{subsection.2.4}%
+\contentsline {section}{\numberline {3}Analysis: what works, and what cannot}{6}{section.3}%
+\contentsline {subsection}{\numberline {3.1}What the measurement contains}{6}{subsection.3.1}%
+\contentsline {subsection}{\numberline {3.2}Why plant identification is ill-posed}{6}{subsection.3.2}%
+\contentsline {subsection}{\numberline {3.3}Cost Function Analysis}{7}{subsection.3.3}%
+\contentsline {subsection}{\numberline {3.4}Convergence analysis}{8}{subsection.3.4}%
+\contentsline {subsection}{\numberline {3.5}Are the regressors persistently exciting?}{10}{subsection.3.5}%
+\contentsline {subsection}{\numberline {3.6}Experimental confirmation}{10}{subsection.3.6}%
+\contentsline {section}{\numberline {4}A simplified and formally sound AVC algorithm}{10}{section.4}%
+\contentsline {subsection}{\numberline {4.1}What is removed}{11}{subsection.4.1}%
+\contentsline {paragraph}{The plant adaptation.}{11}{section*.15}%
+\contentsline {paragraph}{The regulariser and the division guard.}{11}{section*.16}%
+\contentsline {paragraph}{The cost function.}{11}{section*.17}%
+\contentsline {subsection}{\numberline {4.2}The algorithm}{11}{subsection.4.2}%
+\contentsline {subsection}{\numberline {4.3}What can be guaranteed}{11}{subsection.4.3}%
+\contentsline {subsection}{\numberline {4.4}What the algorithm actually is}{12}{subsection.4.4}%
+\contentsline {subsection}{\numberline {4.5}Simulation results}{13}{subsection.4.5}%
+\contentsline {paragraph}{Harmonics rejection.}{13}{section*.20}%
+\contentsline {paragraph}{Sweeping the calibration phase.}{14}{section*.22}%

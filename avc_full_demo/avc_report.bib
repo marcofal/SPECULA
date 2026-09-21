@@ -1,0 +1,400 @@
+% =====================================================================
+%  Bibliography for "Adaptive Vibration Cancellation in SPECULA"
+%
+%  Entries marked [VERIFIED] were checked online while writing the
+%  report. The remainder are standard references written from memory:
+%  the works exist, but volume/page details should be confirmed against
+%  the publisher before submission.
+% =====================================================================
+
+% Verified online while writing (author/venue/volume/pages confirmed):
+%   bodson1997, feintuch1976, kahan1965, thomas2006
+% All other entries are standard works written from memory: they exist,
+% but volume/page details should be confirmed before submission.
+
+% ------------------------- the algorithm -----------------------------
+
+% muradore2012: The algorithm implemented and analyzed in this report
+@inproceedings{muradore2012,
+  author    = {Muradore, Riccardo and Pettazzi, Lorenzo and Fedrigo, Enrico and Clare, Richard},
+  title     = {On the rejection of vibrations in adaptive optics systems},
+  booktitle = {Adaptive Optics Systems III},
+  series    = {Proc. SPIE},
+  volume    = {8447},
+  year      = {2012},
+  publisher = {SPIE}
+}
+
+% pigg2010tcst: Origin of the AVC update law; contains the stability analysis not reproduced in \cite{muradore2012}
+@article{pigg2010tcst,
+  author  = {Pigg, Scott and Bodson, Marc},
+  title   = {Adaptive algorithms for the rejection of sinusoidal disturbances
+             acting on unknown plants},
+  journal = {IEEE Transactions on Control Systems Technology},
+  volume  = {18},
+  number  = {4},
+  pages   = {822--836},
+  year    = {2010}
+}
+
+@inproceedings{pigg2010cdc,
+  author    = {Pigg, Scott and Bodson, Marc},
+  title     = {Adaptive harmonic steady-state disturbance rejection with
+               frequency tracking},
+  booktitle = {49th IEEE Conference on Decision and Control (CDC)},
+  pages     = {887--892},
+  year      = {2010},
+  publisher = {IEEE}
+}
+
+% bodson1997: Direct (phase-locked-loop) and indirect algorithms for simultaneous frequency estimation and cancellation
+@article{bodson1997,
+  author  = {Bodson, Marc and Douglas, Scott C.},
+  title   = {Adaptive algorithms for the rejection of sinusoidal disturbances
+             with unknown frequency},
+  journal = {Automatica},
+  volume  = {33},
+  number  = {12},
+  pages   = {2213--2221},
+  year    = {1997},
+  doi     = {10.1016/S0005-1098(97)00149-0}
+}
+
+@article{sacks1996,
+  author  = {Sacks, Aaron and Bodson, Marc and Khosla, Pradeep},
+  title   = {Experimental results of adaptive periodic disturbance
+             cancellation in a high performance magnetic disk drive},
+  journal = {Journal of Dynamic Systems, Measurement, and Control},
+  volume  = {118},
+  number  = {3},
+  pages   = {416--424},
+  year    = {1996}
+}
+
+% ------------------- adaptive filtering / identification -------------
+
+% feintuch1976: The canonical pseudo-gradient IIR update: the parameter dependence of the regressor is ignored
+@article{feintuch1976,
+  author  = {Feintuch, Paul L.},
+  title   = {An adaptive recursive {LMS} filter},
+  journal = {Proceedings of the IEEE},
+  volume  = {64},
+  number  = {11},
+  pages   = {1622--1624},
+  year    = {1976}
+}
+
+% widrow1977comments: Points out that Feintuch's algorithm is not a gradient method
+@article{widrow1977comments,
+  author  = {Widrow, Bernard and McCool, John M.},
+  title   = {Comments on ``An adaptive recursive {LMS} filter''},
+  journal = {Proceedings of the IEEE},
+  volume  = {65},
+  number  = {9},
+  pages   = {1402--1404},
+  year    = {1977}
+}
+
+% shynk1989: Survey of equation-error versus output-error formulations
+@article{shynk1989,
+  author  = {Shynk, John J.},
+  title   = {Adaptive {IIR} filtering},
+  journal = {IEEE ASSP Magazine},
+  volume  = {6},
+  number  = {2},
+  pages   = {4--21},
+  year    = {1989}
+}
+
+% ljung1999: Persistent excitation; a sinusoid is persistently exciting of order 2
+@book{ljung1999,
+  author    = {Ljung, Lennart},
+  title     = {System Identification: Theory for the User},
+  edition   = {2nd},
+  publisher = {Prentice Hall},
+  year      = {1999}
+}
+
+@book{sastry1989,
+  author    = {Sastry, Shankar and Bodson, Marc},
+  title     = {Adaptive Control: Stability, Convergence and Robustness},
+  publisher = {Prentice Hall},
+  year      = {1989}
+}
+
+@book{astrom1995,
+  author    = {{\AA}str{\"o}m, Karl J. and Wittenmark, Bj{\"o}rn},
+  title     = {Adaptive Control},
+  edition   = {2nd},
+  publisher = {Addison-Wesley},
+  year      = {1995}
+}
+
+@book{haykin2013,
+  author    = {Haykin, Simon},
+  title     = {Adaptive Filter Theory},
+  edition   = {5th},
+  publisher = {Pearson},
+  year      = {2013}
+}
+
+% --------------------------- FxLMS / ANC -----------------------------
+
+% morgan1980: Origin of the filtered-X idea: the regressor must be filtered through an estimate of the secondary path
+@article{morgan1980,
+  author  = {Morgan, Dennis R.},
+  title   = {An analysis of multiple correlation cancellation loops with a
+             filter in the auxiliary path},
+  journal = {IEEE Transactions on Acoustics, Speech, and Signal Processing},
+  volume  = {28},
+  number  = {4},
+  pages   = {454--467},
+  year    = {1980}
+}
+
+@book{kuo1996,
+  author    = {Kuo, Sen M. and Morgan, Dennis R.},
+  title     = {Active Noise Control Systems: Algorithms and {DSP}
+               Implementations},
+  publisher = {Wiley},
+  year      = {1996}
+}
+
+@article{sievers1992,
+  author  = {Sievers, Lisa A. and von Flotow, Andreas H.},
+  title   = {Comparison and extensions of control methods for narrow-band
+             disturbance rejection},
+  journal = {IEEE Transactions on Signal Processing},
+  volume  = {40},
+  number  = {10},
+  pages   = {2377--2391},
+  year    = {1992}
+}
+
+% ------------------ phase-locked loops / frequency tracking ----------
+
+% gardner2005: Standard reference for PLL analysis and design
+@book{gardner2005,
+  author    = {Gardner, Floyd M.},
+  title     = {Phaselock Techniques},
+  edition   = {3rd},
+  publisher = {Wiley},
+  year      = {2005}
+}
+
+@article{lindsey1981,
+  author  = {Lindsey, William C. and Chie, Chak Ming},
+  title   = {A survey of digital phase-locked loops},
+  journal = {Proceedings of the IEEE},
+  volume  = {69},
+  number  = {4},
+  pages   = {410--431},
+  year    = {1981}
+}
+
+@book{best2007,
+  author    = {Best, Roland E.},
+  title     = {Phase-Locked Loops: Design, Simulation, and Applications},
+  edition   = {6th},
+  publisher = {McGraw-Hill},
+  year      = {2007}
+}
+
+% viterbi1966: Classical analysis of the phase detector and loop dynamics
+@book{viterbi1966,
+  author    = {Viterbi, Andrew J.},
+  title     = {Principles of Coherent Communication},
+  publisher = {McGraw-Hill},
+  year      = {1966}
+}
+
+% ---------------- internal model / resonant control ------------------
+
+% francis1976: Why an integrator in a rotating frame rejects a tone exactly
+@article{francis1976,
+  author  = {Francis, Bruce A. and Wonham, W. Murray},
+  title   = {The internal model principle of control theory},
+  journal = {Automatica},
+  volume  = {12},
+  number  = {5},
+  pages   = {457--465},
+  year    = {1976}
+}
+
+% ------------------- compensated summation / numerics ----------------
+
+% kahan1965: The compensated-summation algorithm used for the phase accumulator
+@article{kahan1965,
+  author  = {Kahan, William},
+  title   = {Pracniques: further remarks on reducing truncation errors},
+  journal = {Communications of the ACM},
+  volume  = {8},
+  number  = {1},
+  pages   = {40},
+  year    = {1965},
+  doi     = {10.1145/363707.363723}
+}
+
+% higham1993: Error analysis of naive, compensated and pairwise summation
+@article{higham1993,
+  author  = {Higham, Nicholas J.},
+  title   = {The accuracy of floating point summation},
+  journal = {SIAM Journal on Scientific Computing},
+  volume  = {14},
+  number  = {4},
+  pages   = {783--799},
+  year    = {1993}
+}
+
+@book{higham2002,
+  author    = {Higham, Nicholas J.},
+  title     = {Accuracy and Stability of Numerical Algorithms},
+  edition   = {2nd},
+  publisher = {SIAM},
+  year      = {2002}
+}
+
+% neumaier1974: The Kahan--Babu{\v{s}}ka--Neumaier variant, which also compensates when the increment exceeds the accumulator
+@article{neumaier1974,
+  author  = {Neumaier, Arnold},
+  title   = {Rundungsfehleranalyse einiger {V}erfahren zur {S}ummation
+             endlicher {S}ummen},
+  journal = {Zeitschrift f{\"u}r Angewandte Mathematik und Mechanik},
+  volume  = {54},
+  number  = {1},
+  pages   = {39--51},
+  year    = {1974}
+}
+
+% ------------------- Shack--Hartmann / centroiding -------------------
+
+% thomas2006: Weighted centre of gravity and the linearity range of Shack--Hartmann slope estimators
+@article{thomas2006,
+  author  = {Thomas, S. and Fusco, T. and Tokovinin, A. and Nicolle, M. and
+             Michau, V. and Rousset, G.},
+  title   = {Comparison of centroid computation algorithms in a
+             {S}hack--{H}artmann sensor},
+  journal = {Monthly Notices of the Royal Astronomical Society},
+  volume  = {371},
+  number  = {1},
+  pages   = {323--336},
+  year    = {2006},
+  doi     = {10.1111/j.1365-2966.2006.10661.x}
+}
+
+@article{nicolle2004,
+  author  = {Nicolle, M. and Fusco, T. and Rousset, G. and Michau, V.},
+  title   = {Improvement of {S}hack--{H}artmann wave-front sensor measurement
+             for extreme adaptive optics},
+  journal = {Optics Letters},
+  volume  = {29},
+  number  = {23},
+  pages   = {2743--2745},
+  year    = {2004}
+}
+
+% --------------------- vibrations in AO systems ----------------------
+
+@inproceedings{dilieto2008,
+  author    = {Di Lieto, Nicola and Haguenauer, Pierre and Sahlmann, Johannes
+               and Vasisht, Gautam},
+  title     = {Adaptive vibration cancellation on large telescopes for
+               stellar interferometry},
+  booktitle = {Proc. SPIE},
+  volume    = {7013},
+  year      = {2008}
+}
+
+@article{meimon2010,
+  author  = {Meimon, Serge and Petit, Cyril and Fusco, Thierry and
+             Kulcs{\'a}r, Caroline},
+  title   = {Tip-tilt disturbance model identification for {K}alman-based
+             control scheme: application to {XAO} and {ELT} systems},
+  journal = {Journal of the Optical Society of America A},
+  volume  = {27},
+  number  = {11},
+  pages   = {A122--A132},
+  year    = {2010}
+}
+
+@article{correia2012,
+  author  = {Correia, Carlos and V{\'e}ran, Jean-Pierre and Herriot, Glen},
+  title   = {Advanced vibration suppression algorithms in adaptive optics
+             systems},
+  journal = {Journal of the Optical Society of America A},
+  volume  = {29},
+  number  = {3},
+  pages   = {185--194},
+  year    = {2012}
+}
+
+@inproceedings{fedrigo2006,
+  author    = {Fedrigo, Enrico and Donaldson, Robert and Soenke, Christian and
+               Myers, Richard and Goodsell, Stephen and Saunter, Chris and
+               Dipper, Nigel},
+  title     = {{SPARTA}: the {ESO} standard platform for adaptive optics
+               real time applications},
+  booktitle = {Proc. SPIE},
+  volume    = {6272},
+  year      = {2006}
+}
+
+% ------------------------- AO simulation -----------------------------
+
+% agapito2016: Predecessor of SPECULA
+@inproceedings{agapito2016,
+  author    = {Agapito, Guido and Puglisi, Alfio and Esposito, Simone},
+  title     = {{PASSATA}: object oriented numerical simulation software for
+               adaptive optics},
+  booktitle = {Proc. SPIE},
+  volume    = {9909},
+  year      = {2016}
+}
+
+% sanders2007: Modern reference for the averaging method and its error bounds
+@book{sanders2007,
+  author    = {Sanders, Jan A. and Verhulst, Ferdinand and Murdock, James},
+  title     = {Averaging Methods in Nonlinear Dynamical Systems},
+  edition   = {2nd},
+  publisher = {Springer},
+  year      = {2007}
+}
+
+% khalil2002: Averaging and the correspondence between averaged equilibria and periodic orbits
+@book{khalil2002,
+  author    = {Khalil, Hassan K.},
+  title     = {Nonlinear Systems},
+  edition   = {3rd},
+  publisher = {Prentice Hall},
+  year      = {2002}
+}
+
+% snyder1994: The canonical statement of the 90-degree criterion: FxLMS
+% converges provided the secondary-path phase estimate is within +-90 deg,
+% under the slow-adaptation assumption
+@article{snyder1994,
+  author  = {Snyder, Scott D. and Hansen, Colin H.},
+  title   = {The effect of transfer function estimation errors on the
+             filtered-x {LMS} algorithm},
+  journal = {IEEE Transactions on Signal Processing},
+  volume  = {42},
+  number  = {4},
+  pages   = {950--953},
+  year    = {1994},
+  doi     = {10.1109/78.285659}
+}
+
+% messner1995: Proves adaptive feedforward cancellation with a sinusoidal
+% regressor is equivalent to an LTI internal-model (resonant) controller,
+% and designs the regressor phase advance from the root locus
+@article{messner1995,
+  author  = {Messner, William and Bodson, Marc},
+  title   = {Design of adaptive feedforward algorithms using internal model
+             equivalence},
+  journal = {International Journal of Adaptive Control and Signal Processing},
+  volume  = {9},
+  number  = {2},
+  pages   = {199--212},
+  year    = {1995},
+  doi     = {10.1002/acs.4480090207}
+}

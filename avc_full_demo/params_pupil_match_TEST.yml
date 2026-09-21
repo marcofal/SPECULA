@@ -1,0 +1,6 @@
+---
+main_override:
+  total_time: 2.000
+
+pupilstop_override:
+  obs_diam: 0.1

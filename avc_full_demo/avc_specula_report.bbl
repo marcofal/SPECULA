@@ -1,0 +1,67 @@
+\begin{thebibliography}{10}
+
+\bibitem{muradore2012}
+R.~Muradore, L.~Pettazzi, E.~Fedrigo, and R.~Clare, ``On the rejection of vibrations in adaptive optics systems,'' in {\em Adaptive Optics Systems III}, vol.~8447 of {\em Proc. SPIE}, SPIE, 2012.
+
+\bibitem{gardner2005}
+F.~M. Gardner, {\em Phaselock Techniques}.
+\newblock Wiley, 3rd~ed., 2005.
+
+\bibitem{lindsey1981}
+W.~C. Lindsey and C.~M. Chie, ``A survey of digital phase-locked loops,'' {\em Proceedings of the IEEE}, vol.~69, no.~4, pp.~410--431, 1981.
+
+\bibitem{bodson1997}
+M.~Bodson and S.~C. Douglas, ``Adaptive algorithms for the rejection of sinusoidal disturbances with unknown frequency,'' {\em Automatica}, vol.~33, no.~12, pp.~2213--2221, 1997.
+
+\bibitem{kahan1965}
+W.~Kahan, ``Pracniques: further remarks on reducing truncation errors,'' {\em Communications of the ACM}, vol.~8, no.~1, p.~40, 1965.
+
+\bibitem{higham1993}
+N.~J. Higham, ``The accuracy of floating point summation,'' {\em SIAM Journal on Scientific Computing}, vol.~14, no.~4, pp.~783--799, 1993.
+
+\bibitem{neumaier1974}
+A.~Neumaier, ``Rundungsfehleranalyse einiger {V}erfahren zur {S}ummation endlicher {S}ummen,'' {\em Zeitschrift f{\"u}r Angewandte Mathematik und Mechanik}, vol.~54, no.~1, pp.~39--51, 1974.
+
+\bibitem{haykin2013}
+S.~Haykin, {\em Adaptive Filter Theory}.
+\newblock Pearson, 5th~ed., 2013.
+
+\bibitem{pigg2010tcst}
+S.~Pigg and M.~Bodson, ``Adaptive algorithms for the rejection of sinusoidal disturbances acting on unknown plants,'' {\em IEEE Transactions on Control Systems Technology}, vol.~18, no.~4, pp.~822--836, 2010.
+
+\bibitem{pigg2010cdc}
+S.~Pigg and M.~Bodson, ``Adaptive harmonic steady-state disturbance rejection with frequency tracking,'' in {\em 49th IEEE Conference on Decision and Control (CDC)}, pp.~887--892, IEEE, 2010.
+
+\bibitem{sanders2007}
+J.~A. Sanders, F.~Verhulst, and J.~Murdock, {\em Averaging Methods in Nonlinear Dynamical Systems}.
+\newblock Springer, 2nd~ed., 2007.
+
+\bibitem{khalil2002}
+H.~K. Khalil, {\em Nonlinear Systems}.
+\newblock Prentice Hall, 3rd~ed., 2002.
+
+\bibitem{ljung1999}
+L.~Ljung, {\em System Identification: Theory for the User}.
+\newblock Prentice Hall, 2nd~ed., 1999.
+
+\bibitem{sastry1989}
+S.~Sastry and M.~Bodson, {\em Adaptive Control: Stability, Convergence and Robustness}.
+\newblock Prentice Hall, 1989.
+
+\bibitem{francis1976}
+B.~A. Francis and W.~M. Wonham, ``The internal model principle of control theory,'' {\em Automatica}, vol.~12, no.~5, pp.~457--465, 1976.
+
+\bibitem{snyder1994}
+S.~D. Snyder and C.~H. Hansen, ``The effect of transfer function estimation errors on the filtered-x {LMS} algorithm,'' {\em IEEE Transactions on Signal Processing}, vol.~42, no.~4, pp.~950--953, 1994.
+
+\bibitem{morgan1980}
+D.~R. Morgan, ``An analysis of multiple correlation cancellation loops with a filter in the auxiliary path,'' {\em IEEE Transactions on Acoustics, Speech, and Signal Processing}, vol.~28, no.~4, pp.~454--467, 1980.
+
+\bibitem{kuo1996}
+S.~M. Kuo and D.~R. Morgan, {\em Active Noise Control Systems: Algorithms and {DSP} Implementations}.
+\newblock Wiley, 1996.
+
+\bibitem{messner1995}
+W.~Messner and M.~Bodson, ``Design of adaptive feedforward algorithms using internal model equivalence,'' {\em International Journal of Adaptive Control and Signal Processing}, vol.~9, no.~2, pp.~199--212, 1995.
+
+\end{thebibliography}

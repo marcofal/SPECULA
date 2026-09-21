@@ -666,7 +666,7 @@ class AdaptiveModeFreeTheta:
     def __init__(self, dt, N=11, window=4000, min_samples=None, dither_std=5.0,
                  dither_after=None, switch_designs=2, redesign_every=250, ms_limit_db=6.0,
                  gain_range=(0.5, 1.5), delay_margin=0.5, warmup_gain=0.4,
-                 acceptance="residual", accept_ratio=1.05, abort_ratio=1.5,
+                 acceptance="residual", accept_ratio=1.05, abort_ratio=1.5, hard_abort_ratio=4.0,
                  abort_min_frames=20, n_taps_log=3, max_radius=0.9995, supervisor=True, blowup_factor=2.0,
                  fast_window=50, holdoff=4, rng=None, name=""):
         if acceptance not in ("model", "residual"):
@@ -683,6 +683,7 @@ class AdaptiveModeFreeTheta:
         self.delay_margin, self.warmup_gain = float(delay_margin), float(warmup_gain)
         self.acceptance = acceptance
         self.accept_ratio, self.abort_ratio = float(accept_ratio), float(abort_ratio)
+        self.hard_abort_ratio = float(hard_abort_ratio)
         self.abort_min_frames, self.n_taps_log = int(abort_min_frames), int(n_taps_log)
         self.max_radius = float(max_radius)
         self.supervisor, self.blowup_factor, self.holdoff = supervisor, float(blowup_factor), int(holdoff)
@@ -760,13 +761,18 @@ class AdaptiveModeFreeTheta:
 
     def _watch_trial(self, y):
         self.trial_fast = (1 - self.fast_alpha) * self.trial_fast + self.fast_alpha * y * y
-        if self.k - self.trial["start"] >= self.abort_min_frames \
-                and self.trial_fast > self.abort_ratio ** 2 * self.incumbent_ms:
+        # the averaged criterion needs abort_min_frames to ignore single noisy samples, but an
+        # unstable loop grows by ~7x in 5 frames at 1 kHz, so one sample far above the reference
+        # aborts at once: a false positive only costs one period on the previous design
+        hard = y * y > self.hard_abort_ratio ** 2 * self.incumbent_ms
+        if hard or (self.k - self.trial["start"] >= self.abort_min_frames
+                    and self.trial_fast > self.abort_ratio ** 2 * self.incumbent_ms):
             t, self.trial = self.trial, None
             self._activate(t["prev"])
             self.hold = max(self.hold, 1)
             self.clean = False
-            self.log.append((self.k, "trial aborted", dict(t["info"], after=self.k - t["start"])))
+            self.log.append((self.k, "trial aborted",
+                             dict(t["info"], after=self.k - t["start"], instantaneous=bool(hard))))
 
     # ---------------- supervisor ---------------- #
     def _supervise(self, y):

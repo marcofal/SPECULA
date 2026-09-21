@@ -1,0 +1,59 @@
+\relax 
+\providecommand\hyper@newdestlabel[2]{}
+\providecommand\HyperFirstAtBeginDocument{\AtBeginDocument}
+\HyperFirstAtBeginDocument{\ifx\hyper@anchor\@undefined
+\global\let\oldcontentsline\contentsline
+\gdef\contentsline#1#2#3#4{\oldcontentsline{#1}{#2}{#3}}
+\global\let\oldnewlabel\newlabel
+\gdef\newlabel#1#2{\newlabelxx{#1}#2}
+\gdef\newlabelxx#1#2#3#4#5#6{\oldnewlabel{#1}{{#2}{#3}}}
+\AtEndDocument{\ifx\hyper@anchor\@undefined
+\let\contentsline\oldcontentsline
+\let\newlabel\oldnewlabel
+\fi}
+\fi}
+\global\let\hyper@last\relax 
+\gdef\HyperFirstAtBeginDocument#1{#1}
+\providecommand\HyField@AuxAddToFields[1]{}
+\providecommand\HyField@AuxAddToCoFields[2]{}
+\@writefile{toc}{\contentsline {section}{\numberline {1}Setup}{1}{section.1}\protected@file@percent }
+\newlabel{eq:theta}{{2}{1}{Setup}{equation.1.2}{}}
+\newlabel{eq:pseudo}{{3}{1}{Setup}{equation.1.3}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {2}Exact differentiation}{1}{section.2}\protected@file@percent }
+\newlabel{sec:exact}{{2}{1}{Exact differentiation}{section.2}{}}
+\newlabel{eq:g}{{4}{1}{Exact differentiation}{equation.2.4}{}}
+\@writefile{toc}{\contentsline {paragraph}{Step 1: gradients of the control parameters.}{2}{section*.1}\protected@file@percent }
+\newlabel{eq:gradtheta}{{5}{2}{Step 1: gradients of the control parameters}{equation.2.5}{}}
+\@writefile{toc}{\contentsline {paragraph}{Step 2: the chain-rule term.}{2}{section*.2}\protected@file@percent }
+\newlabel{eq:AB}{{6}{2}{Step 2: the chain-rule term}{equation.2.6}{}}
+\@writefile{toc}{\contentsline {paragraph}{Step 3: the disturbance components.}{2}{section*.3}\protected@file@percent }
+\newlabel{eq:g34}{{7}{2}{Step 3: the disturbance components}{equation.2.7}{}}
+\@writefile{toc}{\contentsline {paragraph}{Step 4: the plant components.}{2}{section*.4}\protected@file@percent }
+\newlabel{eq:g12}{{8}{2}{Step 4: the plant components}{equation.2.8}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {3}The cost is not a control objective}{2}{section.3}\protected@file@percent }
+\newlabel{sec:cost}{{3}{2}{The cost is not a control objective}{section.3}{}}
+\@writefile{toc}{\contentsline {paragraph}{The model predicts perfect cancellation of its own estimate.}{2}{section*.5}\protected@file@percent }
+\newlabel{eq:Zhat}{{9}{2}{The model predicts perfect cancellation of its own estimate}{equation.3.9}{}}
+\@writefile{toc}{\contentsline {paragraph}{Consequence: at $\epsilon =0$ the exact gradient is identically zero.}{2}{section*.6}\protected@file@percent }
+\newlabel{eq:collapse}{{10}{2}{Consequence: at $\epsilon =0$ the exact gradient is identically zero}{equation.3.10}{}}
+\@writefile{toc}{\contentsline {paragraph}{Practical consequence: the disturbance estimate collapses.}{3}{section*.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {4}What the pseudo-gradient does, and why to keep it}{3}{section.4}\protected@file@percent }
+\newlabel{sec:pseudo}{{4}{3}{What the pseudo-gradient does, and why to keep it}{section.4}{}}
+\newlabel{eq:slow}{{12}{3}{What the pseudo-gradient does, and why to keep it}{equation.4.12}{}}
+\newlabel{eq:phasemargin}{{13}{3}{What the pseudo-gradient does, and why to keep it}{equation.4.13}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {5}The hybrid update}{3}{section.5}\protected@file@percent }
+\newlabel{sec:hybrid}{{5}{3}{The hybrid update}{section.5}{}}
+\newlabel{eq:hybrid}{{14}{3}{The hybrid update}{equation.5.14}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {1}{\ignorespaces Verification of \textup  {\hbox {\mathsurround \z@ \normalfont  (\ignorespaces \ref  {eq:slow}\unskip \@@italiccorr )}}--\textup  {\hbox {\mathsurround \z@ \normalfont  (\ignorespaces \ref  {eq:phasemargin}\unskip \@@italiccorr )}}. True $|\Lambda _\star |=600$. Below $90^\circ $ the tone is cancelled to numerical precision regardless of the plant estimate; beyond $90^\circ $ the loop diverges.}}{4}{table.1}\protected@file@percent }
+\newlabel{tab:phase}{{1}{4}{Verification of \eqref {eq:slow}--\eqref {eq:phasemargin}. True $|\Lambda _\star |=600$. Below $90^\circ $ the tone is cancelled to numerical precision regardless of the plant estimate; beyond $90^\circ $ the loop diverges}{table.1}{}}
+\@writefile{toc}{\contentsline {paragraph}{Damping.}{4}{section*.8}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Scope.}{4}{section*.9}\protected@file@percent }
+\@writefile{toc}{\contentsline {section}{\numberline {6}Simulation results}{4}{section.6}\protected@file@percent }
+\newlabel{sec:sim}{{6}{4}{Simulation results}{section.6}{}}
+\@writefile{lot}{\contentsline {table}{\numberline {2}{\ignorespaces Controlled comparison. The original update with online plant adaptation gives no cancellation, independently of how well it is initialised. The hybrid cancels by $48$--$59$\,dB from either seed. A measured, frozen plant is the best performer, consistent with Sec.\nobreakspace  {}\ref  {sec:hybrid}: online plant adaptation buys robustness to a drifting plant, not accuracy.}}{4}{table.2}\protected@file@percent }
+\newlabel{tab:cmp}{{2}{4}{Controlled comparison. The original update with online plant adaptation gives no cancellation, independently of how well it is initialised. The hybrid cancels by $48$--$59$\,dB from either seed. A measured, frozen plant is the best performer, consistent with Sec.~\ref {sec:hybrid}: online plant adaptation buys robustness to a drifting plant, not accuracy}{table.2}{}}
+\@writefile{lof}{\contentsline {figure}{\numberline {1}{\ignorespaces (a) the two ORIGINAL traces remain on the baseline while the hybrid and the frozen reference fall by 2--3 decades; (b),(c) the original plant estimate wanders over three decades in magnitude and the full $\pm 180^\circ $ in phase---violating \textup  {\hbox {\mathsurround \z@ \normalfont  (\ignorespaces \ref  {eq:phasemargin}\unskip \@@italiccorr )}}---whereas the hybrid settles and holds its seed phase exactly, as \textup  {\hbox {\mathsurround \z@ \normalfont  (\ignorespaces \ref  {eq:g12}\unskip \@@italiccorr )}} requires; (d) the original disturbance estimate grows without bound while the hybrid plateaus; (e) in the steady-state PSD the original \emph  {enlarges} the 47\,Hz peak; (f) mode-0 residual.}}{5}{figure.1}\protected@file@percent }
+\newlabel{fig:cmp}{{1}{5}{(a) the two ORIGINAL traces remain on the baseline while the hybrid and the frozen reference fall by 2--3 decades; (b),(c) the original plant estimate wanders over three decades in magnitude and the full $\pm 180^\circ $ in phase---violating \eqref {eq:phasemargin}---whereas the hybrid settles and holds its seed phase exactly, as \eqref {eq:g12} requires; (d) the original disturbance estimate grows without bound while the hybrid plateaus; (e) in the steady-state PSD the original \emph {enlarges} the \SI {47}{Hz} peak; (f) mode-0 residual}{figure.1}{}}
+\@writefile{toc}{\contentsline {section}{\numberline {7}Conclusion}{6}{section.7}\protected@file@percent }
+\@writefile{toc}{\contentsline {paragraph}{Reproducibility.}{6}{section*.10}\protected@file@percent }
+\gdef \@abspage@last{6}

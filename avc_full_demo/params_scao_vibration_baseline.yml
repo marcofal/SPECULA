@@ -1,0 +1,195 @@
+---
+# CLOSED-LOOP baseline: identical to params_scao_avc_full_demo.yml --
+# same atmosphere, same narrow-band vibration, same main integrator, same
+# actuator low-pass and DM -- but with NO AVC. This is the correct "before"
+# run for the closed-loop demo: the difference between this and the AVC
+# file is exactly and only the AVC module, so any change in the residual
+# is attributable to AVC alone.
+#
+# What to expect here: the integrator rejects the low-frequency
+# atmospheric content on all 40 modes, but does nothing useful for the
+# narrow-band vibration at 47 Hz -- which sits above the loop bandwidth,
+# in the region where the rejection transfer function actually AMPLIFIES
+# the disturbance (the "waterbed" bump). So the baseline residual spectrum
+# should show suppressed low frequencies and a prominent 47 Hz peak. That
+# peak is what AVC is there to remove.
+#
+# Run with (from this folder):
+#
+#   import specula
+#   specula.init(0, precision=1)
+#   from specula.simul import Simul
+#   Simul('params_scao_vibration_baseline.yml').run()
+
+main:
+  class:             'SimulParams'
+  root_dir:          './calib'
+  pixel_pupil:       64
+  pixel_pitch:       0.015625
+  total_time:        10.000                # [s] must match params_scao_avc_full_demo.yml for a fair comparison
+  time_step:         0.001
+
+seeing:
+  class:             'WaveGenerator'
+  constant:          0.6
+  wave_type:         'SIN'
+  outputs: ['output']
+
+wind_speed:
+  class:             'WaveGenerator'
+  constant:          [5.]
+  outputs: ['output']
+
+wind_direction:
+  class:             'WaveGenerator'
+  constant:          [10.]
+  outputs: ['output']
+
+atmo:
+  class:                'AtmoEvolution'
+  simul_params_ref:     'main'
+  L0:                   25
+  heights:              [0.]
+  Cn2:                  [1.00]
+  fov:                  0.0
+  pixel_phasescreens:   1024
+  inputs:
+    seeing: 'seeing.output'
+    wind_speed: 'wind_speed.output'
+    wind_direction: 'wind_direction.output'
+  outputs: ['layer_list']
+
+on_axis_source:
+  class:             'Source'
+  polar_coordinates:  [0.0, 0.0]
+  magnitude:         5
+  wavelengthInNm:    600
+
+pupilstop:
+  class: 'Pupilstop'
+  simul_params_ref:     'main'
+
+vib_wave:
+  class:             'WaveGenerator'
+  wave_type:         'SIN'
+  amp:               [120]                # [nm] must match params_scao_avc_full_demo.yml
+  freq:              [47.0]                 # [Hz] vibration frequency
+  outputs: ['output']
+
+vib_dm:
+  class:             'DM'
+  simul_params_ref:  'main'
+  type_str:          'zernike'
+  idx_modes:         [0]
+  obsratio:          0.1
+  height:            0
+  inputs:
+    in_command: 'vib_wave.output'
+  outputs: ['out_layer']
+
+prop:
+  class:                'AtmoPropagation'
+  simul_params_ref:     'main'
+  source_dict_ref:      ['on_axis_source']
+  inputs:
+    atmo_layer_list: ['atmo.layer_list']
+    common_layer_list: ['pupilstop',
+                  'dm.out_layer:-1',
+                  'vib_dm.out_layer']
+  outputs: ['out_on_axis_source_ef']
+
+sh:
+  class:             'SH'
+  subap_wanted_fov:  4.0
+  sensor_pxscale:    0.5
+  subap_npx:         8
+  subap_on_diameter: 8
+  wavelengthInNm:    600
+  inputs:
+    in_ef: 'prop.out_on_axis_source_ef'
+  outputs:  ['out_i']
+
+detector:
+  class:             'CCD'
+  simul_params_ref:  'main'
+  size:              [64,64]
+  dt:                0.001
+  bandw:             300
+  photon_noise:      True
+  readout_noise:     True
+  readout_level:     1.0
+  quantum_eff:       0.3
+  inputs:
+    in_i: 'sh.out_i'
+  outputs:  ['out_pixels']
+
+slopec:
+  class:             'ShSlopec'
+  subapdata_object:  'scao_subaps_n8_th0.5'
+  weightedPixRad:    4.0
+  inputs:
+    in_pixels:        'detector.out_pixels'
+  outputs:  ['out_slopes', 'out_subapdata']
+
+rec:
+  class:              'Modalrec'
+  recmat_object:      'scao_rec_n8_th0.5'
+  inputs:
+    in_slopes:        'slopec.out_slopes'
+  outputs:  ['out_modes']
+
+# Main integrator, actuator low-pass and DM -- identical to
+# params_scao_avc_full_demo.yml. The ONLY difference between the two files
+# is that this one has no AVC (and hence no comm_combiner: the DM is driven
+# by the integrator alone).
+
+control:
+  class:             'Integrator'
+  delay:             2
+  int_gain:          [0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,
+                      0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,
+                      0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,
+                      0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5,0.5]
+  inputs:
+      delta_comm: 'rec.out_modes'
+  outputs:  ['out_comm']
+
+lowpass:
+  class:             'LowPassFilter'
+  simul_params_ref:  'main'
+  cutoff_freq:       [80.0]
+  n_ord:             1
+  n_modes:           40
+  delay:             0
+  inputs:
+    delta_comm: 'control.out_comm'
+  outputs: ['out_comm']
+
+dm:
+  class:             'DM'
+  simul_params_ref:  'main'
+  type_str:          'zernike'
+  nmodes:            40
+  obsratio:          0.1
+  height:            0
+  inputs:
+      in_command: 'lowpass.out_comm'
+  outputs:  ['out_layer']
+
+# psf:
+#   class:             'PSF'
+#   simul_params_ref:  'main'
+#   wavelengthInNm:    1650
+#   nd:                8
+#   start_time:        0.0
+#   inputs:
+#       in_ef:  'prop.out_on_axis_source_ef'
+#   outputs:  ['out_psf', 'out_sr']
+
+data_store:
+  class:             'DataStore'
+  store_dir:         './output/no_AVC'            
+  inputs:
+    input_list: [
+                 'res_modes-rec.out_modes',
+                 'vib-vib_wave.output']

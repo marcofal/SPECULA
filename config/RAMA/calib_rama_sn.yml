@@ -1,0 +1,36 @@
+---
+# RAMA calibration: slope null (reference signal) at the loop modulation.
+#   specula params_rama.yml calib_rama_sn.yml
+# Produces  calib/slopenulls/rama_sn_ff.fits
+#
+# OOPAO subtracts a flat-wavefront reference from the pyramid signal and
+# recomputes it whenever the modulation changes, so after ramatwin.py sets
+# wfs.modulation = 0 for the closed loop the reference is the unmodulated one.
+# Without it the unmodulated loop integrates the flat-wavefront signal into a
+# ~16 nm rms static aberration.  Run this before calib_rama_rec.yml.
+
+sn_calibrator:
+  class:             'SnCalibrator'
+  output_tag:        'rama_sn_ff'
+  overwrite:         True
+  inputs:
+    in_slopes:       'slopec.out_slopes'
+
+slopec_override:
+  sn_object:         null                   # the reference does not exist yet
+
+prop_override:
+  inputs:
+    common_layer_list: ['pupilstop']        # flat wavefront, no DM
+
+detector_override:
+  photon_noise:      False
+  readout_noise:     False
+
+main_override:
+  total_time:        0.003
+
+# the display objects of params_rama.yml read from objects removed here; drop
+# them from this list if you delete them from params_rama.yml
+remove: ['atmo', 'rec', 'control', 'dm', 'psf', 'data_store',
+         'ph_disp', 'pix_disp', 'psf_disp']

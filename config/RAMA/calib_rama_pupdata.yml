@@ -1,5 +1,7 @@
 ---
-# Step 1 of the RAMA calibration: locate the 4 pyramid pupils on the detector.
+# Optional: locate the 4 pyramid pupils on the detector (thresholded pupils).
+# The loop uses the full-frame pupil data written by make_rama_calib.py
+# (rama_pupdata_ff); this step is only useful to inspect the pupil geometry.
 #   specula params_rama.yml calib_rama_pupdata.yml
 # Produces  calib/pupils/rama_pupdata.fits
 #
@@ -26,4 +28,7 @@ prop_override:
 main_override:
   total_time:        0.001
 
-remove: ['atmo', 'slopec', 'rec', 'control', 'dm', 'psf', 'data_store']
+# the display objects of params_rama.yml read from objects removed here; drop
+# them from this list if you delete them from params_rama.yml
+remove: ['atmo', 'slopec', 'rec', 'control', 'dm', 'psf', 'data_store',
+         'ph_disp', 'pix_disp', 'psf_disp']

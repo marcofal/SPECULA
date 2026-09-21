@@ -1,0 +1,191 @@
+atmo:
+  Cn2:
+  - 1.0
+  L0: 25
+  class: AtmoEvolution
+  fov: 0.0
+  heights:
+  - 0.0
+  inputs:
+    seeing: seeing.output
+    wind_direction: wind_direction.output
+    wind_speed: wind_speed.output
+  outputs:
+  - layer_list
+  pixel_phasescreens: 1024
+  simul_params_ref: main
+control:
+  class: Integrator
+  delay: 2
+  inputs:
+    delta_comm: data_source.res_modes
+  int_gain:
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  - 0.5
+  outputs:
+  - out_comm
+detector:
+  bandw: 300
+  class: CCD
+  dt: 0.001
+  inputs:
+    in_i: sh.out_i
+  outputs:
+  - out_pixels
+  photon_noise: true
+  quantum_eff: 0.3
+  readout_level: 1.0
+  readout_noise: true
+  simul_params_ref: main
+  size:
+  - 64
+  - 64
+dm:
+  class: DM
+  height: 0
+  inputs:
+    in_command: lowpass.out_comm
+  nmodes: 40
+  obsratio: 0.1
+  outputs:
+  - out_layer
+  simul_params_ref: main
+  type_str: zernike
+lowpass:
+  class: LowPassFilter
+  cutoff_freq:
+  - 80.0
+  delay: 0
+  inputs:
+    delta_comm: control.out_comm
+  n_modes: 40
+  n_ord: 1
+  outputs:
+  - out_comm
+  simul_params_ref: main
+main:
+  class: SimulParams
+  pixel_pitch: 0.015625
+  pixel_pupil: 64
+  root_dir: ./calib
+  time_step: 0.001
+  total_time: 5.0
+on_axis_source:
+  class: Source
+  magnitude: 5
+  polar_coordinates:
+  - 0.0
+  - 0.0
+  wavelengthInNm: 600
+prop:
+  class: AtmoPropagation
+  inputs:
+    atmo_layer_list:
+    - atmo.layer_list
+    common_layer_list:
+    - pupilstop
+    - dm.out_layer:-1
+    - vib_dm.out_layer
+  outputs:
+  - out_on_axis_source_ef
+  simul_params_ref: main
+  source_dict_ref:
+  - on_axis_source
+pupilstop:
+  class: Pupilstop
+  simul_params_ref: main
+seeing:
+  class: WaveGenerator
+  constant: 0.6
+  outputs:
+  - output
+  wave_type: SIN
+sh:
+  class: SH
+  inputs:
+    in_ef: prop.out_on_axis_source_ef
+  outputs:
+  - out_i
+  sensor_pxscale: 0.5
+  subap_npx: 8
+  subap_on_diameter: 8
+  subap_wanted_fov: 4.0
+  wavelengthInNm: 600
+slopec:
+  class: ShSlopec
+  inputs:
+    in_pixels: detector.out_pixels
+  outputs:
+  - out_slopes
+  - out_subapdata
+  subapdata_object: scao_subaps_n8_th0.5
+  weightedPixRad: 4.0
+vib_dm:
+  class: DM
+  height: 0
+  idx_modes:
+  - 0
+  inputs:
+    in_command: data_source.vib
+  obsratio: 0.1
+  outputs:
+  - out_layer
+  simul_params_ref: main
+  type_str: zernike
+wind_direction:
+  class: WaveGenerator
+  constant:
+  - 10.0
+  outputs:
+  - output
+wind_speed:
+  class: WaveGenerator
+  constant:
+  - 5.0
+  outputs:
+  - output
+data_source:
+  class: DataSource
+  outputs:
+  - res_modes
+  - vib
+  store_dir: ./cmp_NOVIB/20260817_124616
+  global_precision: 1

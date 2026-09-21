@@ -3,11 +3,11 @@
 #   OOPAO/tutorials/RAMA/parameter_files/parameterFile_ramatwin.py
 #   OOPAO/tutorials/RAMA/compute_ramatwin.py
 #
-# The calibration products (DM influence functions, KL basis, pupil masks) are
-# produced by make_rama_calib.py -- run it once before this file.
-#
-# Calibration order:
-#   specula params_rama.yml calib_rama_pupdata.yml
+# The calibration products (DM influence functions, KL basis, pupil masks,
+# full-frame pupil data) are produced by make_rama_calib.py -- run it once
+# before this file.  Calibration order, from config/RAMA:
+#   python make_rama_calib.py --if-file /path/to/IF_97.npy --root-dir calib
+#   specula params_rama.yml calib_rama_sn.yml
 #   specula params_rama.yml calib_rama_rec.yml
 #   specula params_rama.yml
 
@@ -17,7 +17,7 @@ main:
   root_dir:          './calib/'             # Root directory for calibration manager
   pixel_pupil:       72                     # 36 subaps x 2 px/subap (OOPAO 'resolution')
   pixel_pitch:       0.008333333            # [m] 0.6 m / 72 px
-  total_time:        0.500                  # [s] 500 iterations, as in ramatwin.py
+  total_time:        30.0                # [s] 500 iterations, as in ramatwin.py
   time_step:         0.001                  # [s] OOPAO 'samplingTime'
 
 
@@ -27,12 +27,14 @@ main:
 # --------------------------------------------------------------------------
 seeing:
   class:             'WaveGenerator'
-  constant:          1.0065                 # ["] seeing, equivalent to r0 = 0.10 m
+  # constant:          1.0065                 # ["] seeing, equivalent to r0 = 0.10 m
+  constant:          2.013                 # ["] seeing, equivalent to r0 = 0.10 m
 
 
 wind_speed:
   class:             'WaveGenerator'
-  constant:          [5., 4., 8., 10., 2.]  # [m/s]
+  # constant:          [5., 4., 8., 10., 2.]  # [m/s]
+  constant:          [10., 8., 16., 20., 4.]  # [m/s]
 
 
 wind_direction:
@@ -79,6 +81,11 @@ atmo:
   heights:              [0., 1000., 5000., 10000., 12000.]   # [m]
   Cn2:                  [0.45, 0.10, 0.10, 0.25, 0.10]       # OOPAO 'fractionnalR0'
   fov:                  0.0
+  # Layers must be larger than the pupil diagonal (72*sqrt(2) = 102 px): the
+  # wind directions 72/144/216/288 deg are applied by rotating each layer, and
+  # with pupil-sized layers the rotated-out corners are zero-filled, putting
+  # um-level phase steps on the pupil edge.  0.9 m = 108 px.
+  fov_in_m:             0.9
   seed:                 10                                   # ramatwin.py: seed = 10
   inputs:
     seeing: 'seeing.output'
@@ -134,11 +141,18 @@ detector:
     in_i: 'pyramid.out_i'
 
 
-# OOPAO 'postProcessing' = 'fullFrame_sum_flux': the signal is the whole set of
-# valid pixels normalised by the total flux -> slopes_from_intensity in SPECULA.
+# OOPAO 'postProcessing' = 'fullFrame_sum_flux' with lightRatio = 0: the signal
+# is the whole 120x120 frame normalised by the total flux, minus a reference
+# taken at the loop modulation.  In SPECULA:
+#   slopes_from_intensity  -> intensity signal
+#   rama_pupdata_ff        -> the four 60x60 quadrants, i.e. every pixel
+#   rama_sn_ff             -> flat-wavefront reference at mod_amp 0
+#                             (calib_rama_sn.yml); OOPAO recomputes it when
+#                             wfs.modulation is set back to 0 after calibration
 slopec:
   class:             'PyrSlopec'
-  pupdata_object:    'rama_pupdata'
+  pupdata_object:    'rama_pupdata_ff'
+  sn_object:         'rama_sn_ff'
   slopes_from_intensity: True
   inputs:
     in_pixels:       'detector.out_pixels'
@@ -147,19 +161,61 @@ slopec:
 
 rec:
   class:              'Modalrec'
-  recmat_object:      'rama_rec'
+  recmat_object:      'rama_rec_ff'
   inputs:
     in_slopes:        'slopec.out_slopes'
   outputs: ['out_modes']
 
 
+# control:
+#   class:             'Integrator'
+#   delay:             1                      # = ramatwin.py frame_delay 2 (see IirFilter below)
+#   int_gain:          [0.0]                  # ramatwin.py: gainCL = 0.4
+#   n_modes:           [83]                   # ramatwin.py: end_mode = 83
+#   inputs:
+#       delta_comm: 'rec.out_modes'
+
+# Temporal controller, mode by mode:
+#   mode 0  (tip)   -> synthesised IIR filter, row 0
+#   mode 1  (tilt)  -> synthesised IIR filter, row 1
+#   modes 2..82     -> plain integrator, row 2 (ramatwin.py gainCL = 0.4)
+# n_modes expands each row into a block, so nfilter = 1 + 1 + 81 = 83,
+# matching rec/dm nmodes.  An integrator is the first-order IIR filter
+#   H(z) = g*z / (z - 1)   ->  num = [0, g],  den = [-1, 1]
+# Rows are zero-padded on the left to the widest order (21 for both num and den);
+# IirFilterData right-aligns each row according to its ordnum/ordden.
+# num and den MUST have the same length.  IirFilter computes
+#   y_k den[-1] = sum_j num[j] x_(k-(len(num)-1-j)) - sum_j den[j] y_(k-(len(den)-1-j))
+# so a numerator one coefficient shorter than the denominator implements
+# z*N(z)/D(z), i.e. one frame LESS delay than N(z)/D(z).  The tip/tilt rows
+# were synthesised as 20/21 coefficients: the trailing 0.0 on num restores
+# N/D.  (With the old 'delay: 2', one frame too many, the two errors cancelled.)
+temporal_filter:
+  class:            'IirFilterData'
+  n_modes:          [1, 1, 1, 80]
+  ordnum:           [5, 5, 5, 2]
+  ordden:           [5, 5, 5 ,2]
+  num:  [ [0.0, -0.0, -0.0, -0.4717368, 0.5197334],
+          [0.0, -0.0, -0.0, -0.4717368, 0.5197334],
+          [0.0, -0.0, 0.0, -0.3118503, 0.3602185],
+         [ 0.0, 0.0, 0.0, 0.0, 0.6]]
+  den:  [[0.4717368, 0.1425199, -0.7015853, -0.9111298, 1.0],
+         [0.4717368, 0.1425199, -0.7015853, -0.9111298, 1.0],
+         [0.3118503, 0.2900327, -0.7018645, -0.8946667, 1.0],
+         [ 0.0, 0.0, 0.0, -1.0, 1.0]]
+
+
 control:
-  class:             'Integrator'
-  delay:             2                      # ramatwin.py: frame_delay = 2
-  int_gain:          [0.4]                  # ramatwin.py: gainCL = 0.4
-  n_modes:           [83]                   # ramatwin.py: end_mode = 83
+  class:                'IirFilter'
+  # The DM layer enters the propagation as 'dm.out_layer:-1', which adds one
+  # frame, so the total loop delay is delay + 1.  delay: 1 reproduces
+  # ramatwin.py frame_delay = 2 (checked frame by frame on a noiseless step
+  # response); delay: 2 is a 3-frame loop.
+  delay:                1
+  iir_filter_data_ref:  'temporal_filter'
   inputs:
-      delta_comm: 'rec.out_modes'
+    delta_comm: 'rec.out_modes'
+  outputs: ['out_comm']
 
 
 # ALPAO DM97: measured influence functions, resampled on the 72 px grid with
@@ -197,4 +253,31 @@ data_store:
                  'slopes-slopec.out_slopes',
                  'delta_comm-rec.out_modes',
                  'comm-control.out_comm',
-                 'sr-psf.out_sr']
+                 'sr-psf.out_sr',
+                 'modes-rec.out_modes',]
+
+
+ph_disp:
+  class:            'PhaseDisplay'
+  inputs:
+    phase:       "prop.out_science_source_ef"
+  title:            'PUPIL PHASE'
+  figsize:       [8, 6]  # Default size in inches
+
+pix_disp:
+  class:         'PixelsDisplay'
+  inputs:
+    pixels:      'detector.out_pixels'
+  title:        'PYR WFS detector'
+  # crop:          [90, 150, 90, 150]
+  log_scale:    False
+  figsize:       [8, 6]  # Default size in inches
+
+
+psf_disp:
+  class:            'PsfDisplay'
+  log_scale: True
+  inputs:
+    psf:       "psf.out_psf"
+  title:            'PSF'
+  figsize:       [8, 6]  # Default size in inches
