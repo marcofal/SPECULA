@@ -9,7 +9,7 @@ from specula.base_value import BaseValue
 from specula.data_objects.simul_params import SimulParams
 from specula.lib.adaptive_lqg import AdaptiveModeFreeTheta, AdaptiveModeLQG
 from specula.lib.adaptive_lqg_mimo import AdaptiveMimoFreeTheta
-from specula.lib.adaptive_lqg_var import AdaptiveVarLQG
+from specula.lib.adaptive_lqg_var import AdaptiveVarLQG, PlantIdentifier
 from specula.processing_objects.base_filter import BaseFilter
 
 
@@ -124,6 +124,17 @@ class DataDrivenLqg(BaseFilter):
         ubar the running command mean of time constant eps_tau (eps_tau None: the absolute
         command, which leaves a static error). It buys sensitivity margin, so the tuner can
         keep rho low.
+    ident_modes : list of int, optional
+        Modes to identify but not control: they stay on the integrator, a dither of
+        `ident_dither` nm rms is added to their command and their plant taps are refitted
+        every `redesign_every` frames. |G_i(1)| is then the optical gain of that mode
+        (times the diagonal of the misregistration). Identification costs ~1.5 ms per mode
+        against 16-31 ms to design one, so it can cover the whole basis while the LQG
+        stays on the low orders; the cost is the injected dither, sqrt(n_modes) times its
+        per-mode amplitude.
+    ident_dither, ident_window, ident_min_samples
+        Dither amplitude [nm rms], sliding window and the samples needed before the first
+        fit, for `ident_modes`.
     seed : int
         Dither seed.
     log_file : str, optional
@@ -194,6 +205,10 @@ class DataDrivenLqg(BaseFilter):
                  rho_grid: list = None,
                  eps_grid: list = None,
                  eps_tau: float = 5e-3,
+                 ident_modes: list = None,
+                 ident_dither: float = 1.0,
+                 ident_window: int = 4000,
+                 ident_min_samples: int = None,
                  seed: int = 0,
                  log_file: str = None,
                  target_device_idx: int = None,
@@ -216,6 +231,12 @@ class DataDrivenLqg(BaseFilter):
         dither = self._per_mode(dither_std, n_lqg, 'dither_std')
         noise = self._per_mode(noise_var, n_lqg, 'noise_var')
         self.log_file = log_file
+        self.ident_modes = [] if ident_modes is None else [int(m) for m in ident_modes]
+        if any(m < 0 or m >= self.n_modes for m in self.ident_modes):
+            raise ValueError(f"ident_modes out of range for n_modes {self.n_modes}")
+        if set(self.ident_modes) & set(self.lqg_modes):
+            raise ValueError("ident_modes and lqg_modes overlap: a mode is either identified "
+                             "and controlled by the LQG, or identified only")
 
         if method not in ('structured', 'free_theta', 'mimo_free_theta', 'var_lqg'):
             raise ValueError("method must be 'structured', 'free_theta', 'mimo_free_theta' or 'var_lqg', "
@@ -286,6 +307,15 @@ class DataDrivenLqg(BaseFilter):
             self._ctrl_rows.append([i])
         self._n_events = [0] * len(self.mode_ctrl)
 
+        self.ident = None
+        if self.ident_modes:
+            self.ident = PlantIdentifier(
+                len(self.ident_modes), n_g=n_g, p=p, window=int(ident_window),
+                min_samples=ident_min_samples, period=redesign_every,
+                dither_std=self._per_mode(ident_dither, len(self.ident_modes), 'ident_dither'),
+                rng=np.random.default_rng(rng.integers(2 ** 32)),
+                name=f"ident modes {self.ident_modes[0]}-{self.ident_modes[-1]}")
+
         self._int_mask = np.ones(self.n_modes, dtype=bool)
         self._int_mask[self.lqg_modes] = False
         self._u = np.zeros(self.n_modes)                 # CPU float64 command state
@@ -339,7 +369,17 @@ class DataDrivenLqg(BaseFilter):
                 self._u[m], dither[m] = ctrl.step(y[m])
                 self._log_new_events(i)
 
-        self.output_buffer[:, 0] = self.to_xp(self._u, dtype=self.dtype)
+        applied = self._u
+        if self.ident is not None:
+            # the dither perturbs the command that reaches the DM, not the integrator
+            # state, so it is not accumulated by the integrator
+            r = self.ident.dither()
+            applied = self._u.copy()
+            applied[self.ident_modes] += r
+            dither[self.ident_modes] = r
+            self.ident.record(y[self.ident_modes], applied[self.ident_modes], r)
+
+        self.output_buffer[:, 0] = self.to_xp(applied, dtype=self.dtype)
         self.out_dither.value[:] = self.to_xp(dither, dtype=self.dtype)
         self.out_dither.generation_time = self.current_time
         self.out_design.value = self.to_xp(self._design, dtype=self.dtype)
@@ -393,6 +433,9 @@ class DataDrivenLqg(BaseFilter):
             return
         events = {ctrl.name: [dict(frame=k, event=e, **info) for k, e, info in ctrl.log]
                   for ctrl in self.mode_ctrl}
+        if self.ident is not None:
+            events[self.ident.name] = [dict(frame=k, event=e, **info)
+                                       for k, e, info in self.ident.log]
         os.makedirs(os.path.dirname(os.path.abspath(self.log_file)), exist_ok=True)
         with open(self.log_file, 'w') as f:
             json.dump(events, f, indent=1, default=float)

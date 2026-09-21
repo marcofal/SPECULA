@@ -140,6 +140,64 @@ def state_from_history(G, A, y_hist, u_hist, mu=None):
     return np.r_[np.ravel(u_hist[:n_g]), np.ravel([x - mu for x in d]), mu]
 
 
+class PlantIdentifier:
+    """Dither and identify, without designing anything.
+
+    The modes stay on whatever controls them (the integrator): a small dither is added to
+    their command and the per-mode plant taps are refitted from the sliding window every
+    `period` frames. What comes out is |G_i(1)| = |sum_j g_ij|, the fraction of a
+    commanded nm that comes back on its own channel -- the pyramid optical gain times the
+    diagonal of the misregistration times any reconstructor scaling.
+
+    This is the cheap half of the scheme: identification is ~1.5 ms per mode against
+    16-31 ms to design one, so it can run over the whole basis while the LQG stays on the
+    low orders. It needs the dither: in closed loop the command is a deterministic
+    function of past measurements, so there is no excitation to separate plant from
+    controller without one.
+    """
+
+    def __init__(self, m, n_g=3, p=8, window=4000, min_samples=None, period=250,
+                 dither_std=1.0, rng=None, name="ident"):
+        self.m, self.n_g, self.p = int(m), int(n_g), int(p)
+        self.window = int(window)
+        self.min_samples = self.window if min_samples is None else int(min_samples)
+        self.period = int(period)
+        self.dither_std = np.broadcast_to(np.asarray(dither_std, float), (self.m,)).copy()
+        self.rng = np.random.default_rng() if rng is None else rng
+        self.name = name
+        self.Y = deque(maxlen=self.window)
+        self.U = deque(maxlen=self.window)
+        self.R = deque(maxlen=self.window)
+        self.k = 0
+        self.G = None
+        self.log = []
+
+    def dither(self):
+        """The perturbation to add to this frame's command (not to the integrator state)."""
+        return self.dither_std * self.rng.standard_normal(self.m)
+
+    def record(self, y, u, r):
+        """y_k, the command actually applied at k (dither included), and that dither."""
+        self.Y.append(np.asarray(y, float).copy())
+        self.U.append(np.asarray(u, float).copy())
+        self.R.append(np.asarray(r, float).copy())
+        self.k += 1
+        if self.k % self.period == 0 and len(self.Y) >= self.min_samples:
+            self.identify()
+
+    def identify(self):
+        Y, U, R = np.array(self.Y), np.array(self.U), np.array(self.R)
+        try:
+            G = fit_plant_diag(Y, U, R, self.n_g, p=self.p, skip=100)
+        except (np.linalg.LinAlgError, ValueError) as exc:
+            self.log.append((self.k, "ident failed", dict(reason=str(exc))))
+            return
+        self.G = G
+        self.log.append((self.k, "identified",
+                         dict(g=G.tolist(), dc=np.abs(G.sum(axis=1)).tolist(),
+                              dither=self.dither_std.tolist(), samples=len(Y))))
+
+
 class AdaptiveVarLQG:
     """m modal channels, vector-AR turbulence + diagonal plant. Same interface as
     adaptive_lqg_mimo.AdaptiveMimoFreeTheta: step(y_k) -> (u_k, r_k), `log`, `design`,

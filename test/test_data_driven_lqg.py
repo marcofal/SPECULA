@@ -454,5 +454,45 @@ class TestDataDrivenLqgObject(unittest.TestCase):
         self.assertLess(np.sqrt(np.mean(res1[-2000:] ** 2)), 0.5 * np.sqrt(np.mean(res1_int[-2000:] ** 2)))
 
 
+    def test_object_identification_only_modes(self):
+        """ident_modes are dithered and identified but stay on the integrator: the taps
+        must recover the per-mode gain of the plant, and the dither must perturb the
+        applied command without being accumulated by the integrator."""
+        simul_params = SimulParams(time_step=0.001)
+        T, n = 6000, 5
+        gains = np.array([1.0, 0.9, 0.7, 0.5, 0.3])       # the 'optical gain' of each mode
+        d = np.column_stack([ar2_turbulence(T, seed=10 + i, std=60.0) for i in range(n)])
+
+        obj = DataDrivenLqg(simul_params, n_modes=n, lqg_modes=[0], int_gain=0.4,
+                            method='var_lqg', p=4, n_g=3, plant_window=2500, min_samples=1500,
+                            dither_std=5.0, ident_modes=[1, 2, 3, 4], ident_dither=5.0,
+                            ident_window=2500, ident_min_samples=1500, delay=1,
+                            target_device_idx=-1)
+        comm = self._loop(obj, d, obj.seconds_to_t(0.001), M=np.diag(gains))
+        ref = Integrator(int_gain=[0.4], n_modes=[n], delay=1, target_device_idx=-1)
+        comm_ref = self._loop(ref, d, ref.seconds_to_t(0.001), M=np.diag(gains))
+
+        ident = obj.ident
+        self.assertIsNotNone(ident)
+        done = [info for _, ev, info in ident.log if ev == "identified"]
+        self.assertTrue(done, f"nothing identified: {ident.log}")
+        dc = np.asarray(done[-1]["dc"], float)            # |G_i(1)| of modes 1..4
+        np.testing.assert_allclose(dc, gains[1:], atol=0.15)
+        # the response sits at lag 2 (delay 1 in the object, DM read one frame later),
+        # with the plant sign; lags 1 and 3 must be empty
+        g = np.asarray(done[-1]["g"], float)
+        np.testing.assert_allclose(g[:, 1], -gains[1:], atol=0.15)
+        np.testing.assert_allclose(g[:, [0, 2]], 0.0, atol=0.15)
+
+        # the dither perturbs the command, it is not integrated: a random walk would make
+        # the identified modes' commands grow without bound
+        for i in (1, 2, 3, 4):
+            self.assertLess(np.std(comm[-1500:, i]), 1.6 * np.std(comm_ref[-1500:, i]))
+            self.assertLess(abs(np.mean(comm[-1500:, i] - comm_ref[-1500:, i])),
+                            4.0 * np.std(comm_ref[-1500:, i]))
+        # mode 0 is the LQG one and must be untouched by the identifier
+        self.assertEqual(len(obj.mode_ctrl), 1)
+
+
 if __name__ == '__main__':
     unittest.main()
