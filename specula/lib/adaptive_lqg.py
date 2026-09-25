@@ -327,7 +327,7 @@ class AdaptiveModeLQG:
     def __init__(self, dt, n_g=3, p=8, plant_window=4000, dist_window=2000,
                  min_samples=None, dither_std=5.0, redesign_every=250, ms_limit_db=6.0,
                  gain_range=(0.5, 1.5), delay_margin=0.5, plant_rel_std_max=0.25,
-                 warmup_gain=0.4, noise_var=0.0, max_radius=0.9995, supervisor=True,
+                 warmup_gain=0.4, warmup_ff=1.0, noise_var=0.0, max_radius=0.9995, supervisor=True,
                  blowup_factor=2.0, fast_window=50, holdoff=4, rng=None, name=""):
         self.dt, self.n_g, self.p = float(dt), int(n_g), int(p)
         self.min_samples = int(plant_window if min_samples is None else min_samples)
@@ -335,6 +335,7 @@ class AdaptiveModeLQG:
         self.ms_limit_db, self.gain_range = float(ms_limit_db), tuple(gain_range)
         self.delay_margin, self.plant_rel_std_max = float(delay_margin), float(plant_rel_std_max)
         self.warmup_gain, self.noise_var = float(warmup_gain), float(noise_var)
+        self.warmup_ff = float(warmup_ff)
         self.max_radius = float(max_radius)
         self.supervisor, self.blowup_factor, self.holdoff = supervisor, float(blowup_factor), int(holdoff)
         self.fast_alpha = 1.0 / fast_window
@@ -466,7 +467,7 @@ class AdaptiveModeLQG:
 
         r = self.dither_std * self.rng.standard_normal()
         if self.design is None:
-            self.u_int += self.warmup_gain * y
+            self.u_int = self.warmup_ff * self.u_int + self.warmup_gain * y
             u_ctrl = self.u_int
         else:
             dsg = self.design
@@ -660,12 +661,17 @@ class AdaptiveModeFreeTheta:
     (stabilize_theta, max_radius), as the AR model of the structured method.
     Dither: dither_std until `switch_designs` designs are accepted, then
     dither_after (back to dither_std after a supervisor revert).
-    Before the first accepted design an integrator runs.
+    Before the first accepted design an integrator runs, or the IIR filter
+    (warmup_num, warmup_den) when given, in the IirFilterData convention (oldest
+    coefficient first: num[-1] multiplies y_k, den[-1] multiplies u_k). Its state
+    follows the applied commands (dither excluded) while a design runs, so a
+    revert to it is bumpless, as for the integrator.
     """
 
     def __init__(self, dt, N=11, window=4000, min_samples=None, dither_std=5.0,
                  dither_after=None, switch_designs=2, redesign_every=250, ms_limit_db=6.0,
-                 gain_range=(0.5, 1.5), delay_margin=0.5, warmup_gain=0.4,
+                 gain_range=(0.5, 1.5), delay_margin=0.5, warmup_gain=0.4, warmup_ff=1.0,
+                 warmup_num=None, warmup_den=None,
                  acceptance="residual", accept_ratio=1.05, abort_ratio=1.5, hard_abort_ratio=4.0,
                  abort_min_frames=20, n_taps_log=3, max_radius=0.9995, supervisor=True, blowup_factor=2.0,
                  fast_window=50, holdoff=4, rng=None, name=""):
@@ -681,6 +687,17 @@ class AdaptiveModeFreeTheta:
         self.redesign_every = int(redesign_every)
         self.ms_limit_db, self.gain_range = float(ms_limit_db), tuple(gain_range)
         self.delay_margin, self.warmup_gain = float(delay_margin), float(warmup_gain)
+        self.warmup_ff = float(warmup_ff)
+        self.iir = None
+        if (warmup_num is None) != (warmup_den is None):
+            raise ValueError("warmup_num and warmup_den must be given together")
+        if warmup_num is not None:
+            num = np.atleast_1d(np.asarray(warmup_num, dtype=float))
+            den = np.atleast_1d(np.asarray(warmup_den, dtype=float))
+            if den[-1] == 0:
+                raise ValueError("warmup_den[-1] (the u_k coefficient) must be nonzero")
+            self.iir = dict(b=num / den[-1], a=den[:-1] / den[-1],
+                            y=np.zeros(num.size - 1), u=np.zeros(den.size - 1))  # oldest first
         self.acceptance = acceptance
         self.accept_ratio, self.abort_ratio = float(accept_ratio), float(abort_ratio)
         self.hard_abort_ratio = float(hard_abort_ratio)
@@ -825,13 +842,22 @@ class AdaptiveModeFreeTheta:
                 self._redesign()
 
         r = self.dither_level * self.rng.standard_normal()
-        if self.design is None:
-            self.u_int += self.warmup_gain * y
+        if self.design is None and self.iir is not None:
+            f = self.iir
+            u_ctrl = f["b"][:-1] @ f["y"] + f["b"][-1] * y - f["a"] @ f["u"]
+        elif self.design is None:
+            self.u_int = self.warmup_ff * self.u_int + self.warmup_gain * y
             u_ctrl = self.u_int
         else:
             dsg = self.design
             u_ctrl = (dsg.Cc @ self.xc).item() + dsg.Dc.item() * y
             self.u_int = u_ctrl                          # fallback integrator starts bumpless
+        if self.iir is not None:                         # and so does the fallback IIR
+            f = self.iir
+            if f["y"].size:
+                f["y"] = np.r_[f["y"][1:], y]
+            if f["u"].size:
+                f["u"] = np.r_[f["u"][1:], u_ctrl]
         u = u_ctrl + r
 
         if self.design is not None:

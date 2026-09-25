@@ -26,6 +26,12 @@ Structure of Theta (`structure`):
              decentralized integrators the other modes' integrator laws are then out of
              its regressor, and the closed-loop ambiguity is one direction per mode as
              in SISO. Fits nearly uncorrelated modal disturbances.
+  'diag_plant' A(q) full, B(q) diagonal: mode i regresses on the past of all the
+             measurements and on its own commands only, N (m + 1) parameters. The
+             coupling is allowed in the turbulence part only. For y = Gamma(q) u + d,
+             Gamma diagonal and a vector AR A(q) d = e, the exact command part is
+             A(q) Gamma(q), whose off-diagonal terms A_ij Gamma_j are left out: an
+             approximation, good when the AR coupling is weak at the plant lags.
 
 Design (MimoModelLQG): Kalman with W = G_y Sigma G_y^T, V = (1 + s) Sigma,
 S = G_y Sigma (s = 0: the buffers are the observer); LQR on sum |y|^2 +
@@ -69,10 +75,82 @@ def buffer_model(Theta, N, m):
     return F + G_y @ Theta.T, G_u, Theta.T.copy(), G_y
 
 
+def filter_matrices(Lam, ell, m):
+    """(F, G_y, G_u) of the nonminimal filters xi+ = (Lam x I_m) xi + (ell x I_m) y,
+    omega+ = (Lam x I_m) omega + (ell x I_m) u, zeta = (xi, omega), lag-major as the
+    buffers (buffer_matrices is Lam = shift, ell = e_1)."""
+    Lm, lm = np.kron(Lam, np.eye(m)), np.kron(np.asarray(ell, float)[:, None], np.eye(m))
+    Z, z = np.zeros_like(Lm), np.zeros_like(lm)
+    return np.block([[Lm, Z], [Z, Lm]]), np.vstack([lm, z]), np.vstack([z, lm])
+
+
+def filter_model(Theta, F, G_y, G_u):
+    """Innovations model (A, B, C, K) of y = Theta^T zeta + e on the filters (F, G_y, G_u):
+    zeta+ = (F + G_y Theta^T) zeta + G_u u + G_y e."""
+    Theta = np.asarray(Theta, float)
+    return F + G_y @ Theta.T, G_u, Theta.T.copy(), G_y
+
+
+def stabilize_theta_filters(Theta, Lam, ell, m, max_radius=0.9995, max_cond=1e10):
+    """stabilize_theta for filters (Lam, ell) with ell = c e_1 (cascade_filter): the poles
+    of the model are the eigenvalues of M = Lam_m + ell_m Theta_y^T (the omega block is
+    Lam_m, stable). Eigenvalues outside max_radius move radially onto it; the others and
+    their eigenvectors stay. Only the first block row of M depends on Theta_y, so an
+    eigenvector is fixed by its first block x: v = (x, -(Lam_m[m:, m:] - mu)^-1 Lam_m[m:, :m] x).
+    Returns (Theta, number of eigenvalues moved)."""
+    Theta = np.asarray(Theta, float).copy()
+    ell = np.asarray(ell, float)
+    c = ell[0]
+    if c == 0 or np.any(ell[1:]):
+        raise ValueError("stabilize_theta_filters needs ell = c e_1")
+    Lm = np.kron(Lam, np.eye(m))
+    Nm = Lm.shape[0]
+    R = Theta[:Nm].T
+    M = Lm.copy()
+    M[:m] += c * R
+    lam, V = np.linalg.eig(M)
+    big = np.abs(lam) > max_radius
+    if not np.any(big):
+        return Theta, 0
+    if np.linalg.cond(V) >= max_cond:
+        raise np.linalg.LinAlgError("ill-conditioned eigenvectors: cannot move the model poles")
+    cols = V.astype(complex)
+    for i in np.flatnonzero(big):
+        mu = lam[i] * max_radius / abs(lam[i])
+        x = V[:m, i]
+        rest = -np.linalg.solve(Lm[m:, m:] - mu * np.eye(Nm - m), Lm[m:, :m] @ x)
+        cols[:, i] = np.r_[x, rest]
+        lam[i] = mu
+    target = (cols[:m] * lam - Lm[:m] @ cols) / c
+    Theta[:Nm] = np.real(target @ np.linalg.inv(cols)).T
+    return Theta, int(big.sum())
+
+
+def refit_command(Theta, Phi, Y, masks=None, ridge=1e-6):
+    """Least squares of the command part of Theta with the measurement part fixed:
+    y - Theta_y^T xi = Theta_u^T omega + e on the window (Phi = zeta rows). After the
+    model poles are moved, the plant A^-1 B keeps agreeing with the data."""
+    Theta = np.asarray(Theta, float).copy()
+    Nm = Theta.shape[0] // 2
+    E = Y - Phi[:, :Nm] @ Theta[:Nm]
+    for j in range(Theta.shape[1]):
+        ix = np.arange(Nm, 2 * Nm) if masks is None else masks[j][masks[j] >= Nm]
+        X = Phi[:, ix]
+        Theta[ix, j] = np.linalg.solve(ridge * np.eye(len(ix)) + X.T @ X, X.T @ E[:, j])
+    return Theta
+
+
 def own_ar_masks(N, m):
     """Regressor of mode i for structure 'diag_ar': its own past and all the commands."""
     u = np.arange(N * m, 2 * N * m)
     return [np.r_[np.arange(i, N * m, m), u] for i in range(m)]
+
+
+def own_plant_masks(N, m):
+    """Regressor of mode i for structure 'diag_plant': all the measurements and its own
+    commands."""
+    y = np.arange(N * m)
+    return [np.r_[y, N * m + np.arange(i, N * m, m)] for i in range(m)]
 
 
 class MimoSlidingRLS:
@@ -192,10 +270,10 @@ def stabilize_theta_diag(Theta, m, max_radius=0.9995):
     return Theta, moved
 
 
-def implied_diag_taps(Theta, N, m, n):
+def implied_diag_taps(Theta, N, m, n, model=None):
     """First n samples of the impulse response of each mode's own implied plant
-    (diagonal of A^-1 B): an (m, n) array."""
-    A, B, C, _ = buffer_model(Theta, N, m)
+    (diagonal of A^-1 B): an (m, n) array. model: (A, B, C, K) if not the buffers."""
+    A, B, C, _ = buffer_model(Theta, N, m) if model is None else model
     X, out = B.copy(), []
     for _ in range(n):
         out.append(np.diag(C @ X))
@@ -454,17 +532,33 @@ class AdaptiveMimoFreeTheta:
 
     def __init__(self, dt, m, N=11, window=4000, min_samples=None, structure="full", dither_std=5.0,
                  dither_after=None, switch_designs=2, redesign_every=250, ms_limit_db=6.0,
-                 gain_range=(0.5, 1.5), delay_margin=0.5, warmup_gain=0.4, acceptance="residual",
+                 gain_range=(0.5, 1.5), delay_margin=0.5, warmup_gain=0.4, warmup_ff=1.0, acceptance="residual",
                  accept_ratio=1.05, abort_ratio=1.5, hard_abort_ratio=4.0, abort_min_frames=20, n_taps_log=3, max_radius=0.9995,
                  corners=True, supervisor=True, blowup_factor=2.0, fast_window=50, holdoff=4,
+                 poles=None, refit_u=False, rho_grid=(0.0, 1.0, 10.0), eps_grid=(0.0,), eps_tau=None,
                  rng=None, name=""):
         if acceptance not in ("model", "residual"):
             raise ValueError(f"acceptance must be 'model' or 'residual', got {acceptance!r}")
-        if structure not in ("full", "diag_ar"):
-            raise ValueError(f"structure must be 'full' or 'diag_ar', got {structure!r}")
+        if poles is not None:
+            from specula.lib.nonminimal_observer import cascade_filter
+            self.Lam, self.ell = cascade_filter(poles)
+            N = self.Lam.shape[0]
+            self.F, self.G_y, self.G_u = filter_matrices(self.Lam, self.ell, int(m))
+        else:
+            self.Lam = self.ell = None
+            self.F, self.G_y, self.G_u = buffer_matrices(int(N), int(m))
+        self.refit_u = bool(refit_u)
+        self.rho_grid, self.eps_grid = tuple(rho_grid), tuple(eps_grid)
+        self.eps_pole = None if eps_tau is None else float(np.exp(-float(dt) / float(eps_tau)))
+        if structure not in ("full", "diag_ar", "diag_plant"):
+            raise ValueError(f"structure must be 'full', 'diag_ar' or 'diag_plant', got {structure!r}")
         self.dt, self.m, self.N = float(dt), int(m), int(N)
         self.structure = structure
-        masks = own_ar_masks(self.N, self.m) if structure == "diag_ar" else None
+        masks = {"diag_ar": own_ar_masks, "diag_plant": own_plant_masks}.get(structure)
+        masks = masks(self.N, self.m) if masks is not None else None
+        self.masks = masks
+        self.zeta = np.zeros(2 * self.N * self.m)       # filter states (poles given)
+        self.u_bar = np.zeros(self.m)                    # running mean of the applied command (eps term)
         self.rls = MimoSlidingRLS(2 * self.N * self.m, self.m, window, masks=masks)
         self.min_samples = int(window if min_samples is None else min_samples)
         self.dither_std = np.broadcast_to(np.asarray(dither_std, float), (self.m,)).copy()
@@ -476,6 +570,7 @@ class AdaptiveMimoFreeTheta:
         self.ms_limit_db, self.gain_range = float(ms_limit_db), tuple(gain_range)
         self.delay_margin = float(delay_margin)
         self.warmup_gain = np.broadcast_to(np.asarray(warmup_gain, float), (self.m,)).copy()
+        self.warmup_ff = np.broadcast_to(np.asarray(warmup_ff, float), (self.m,)).copy()
         self.acceptance = acceptance
         self.accept_ratio, self.abort_ratio = float(accept_ratio), float(abort_ratio)
         self.hard_abort_ratio = float(hard_abort_ratio)
@@ -504,22 +599,45 @@ class AdaptiveMimoFreeTheta:
         self.trial_fast = 0.0
 
     def _zeta(self):
+        if self.Lam is not None:
+            return self.zeta
         return np.r_[self.y_hist.ravel(), self.u_hist.ravel()]
 
     # ---------------- design ---------------- #
     def _redesign(self):
-        stab = stabilize_theta_diag if self.structure == "diag_ar" else stabilize_theta
-        Theta, moved = stab(self.rls.theta, self.m, self.max_radius)
-        Sigma = self.rls.residual_cov(Theta)
-        taps = implied_diag_taps(Theta, self.N, self.m, self.n_taps_log)
         try:
-            d = tune_mimo_lqg(Theta, self.N, self.m, Sigma, self.dt, self.ms_limit_db, self.gain_range,
-                              self.delay_margin, corners=self.corners)
+            if self.Lam is not None:
+                if self.structure == "diag_ar":
+                    raise ValueError("structure 'diag_ar' needs the buffers (poles=None)")
+                Theta, moved = stabilize_theta_filters(self.rls.theta, self.Lam, self.ell, self.m,
+                                                       self.max_radius)
+            else:
+                stab = stabilize_theta_diag if self.structure == "diag_ar" else stabilize_theta
+                Theta, moved = stab(self.rls.theta, self.m, self.max_radius)
+            if self.refit_u and moved:
+                k = self.rls.n_samples
+                Theta = refit_command(Theta, self.rls.Phi[:k], self.rls.Y[:k], self.masks)
+        except (np.linalg.LinAlgError, ValueError) as exc:
+            self.log.append((self.k, "rejected", dict(reason=str(exc))))
+            return
+        Sigma = self.rls.residual_cov(Theta)
+        model = filter_model(Theta, self.F, self.G_y, self.G_u)
+        taps = implied_diag_taps(Theta, self.N, self.m, self.n_taps_log, model)
+        try:
+            d = tune_mimo_model(*model, Sigma, self.dt, self.ms_limit_db, self.gain_range,
+                                self.delay_margin, rho_grid=self.rho_grid, corners=self.corners,
+                                eps_grid=self.eps_grid, eps_pole=self.eps_pole)
         except (RuntimeError, np.linalg.LinAlgError, ValueError) as exc:
             self.log.append((self.k, "rejected", dict(reason=str(exc), g=taps.tolist())))
             return
         d.g = taps
-        info = dict(rho=d.rho, r_kalman=d.r_kalman, s=d.s, innovation_rms=np.sqrt(np.diag(Sigma)).tolist(),
+        try:                                             # DC gain of the implied plant A^-1 B
+            A_, B_, C_, _ = model
+            dc = (C_ @ np.linalg.solve(np.eye(A_.shape[0]) - A_, B_)).tolist()
+        except np.linalg.LinAlgError:
+            dc = None
+        info = dict(rho=d.rho, eps=d.eps, r_kalman=d.r_kalman, s=d.s, innovation_rms=np.sqrt(np.diag(Sigma)).tolist(),
+                    plant_dc=dc,
                     g=taps.tolist(), pred_std=d.predicted_output_std(), dither=self.dither_level.tolist(),
                     roots_stabilized=moved)
         if self.acceptance == "residual":
@@ -546,6 +664,8 @@ class AdaptiveMimoFreeTheta:
         self.design = design
         if design is not None:
             self.xc = np.r_[self._zeta(), self.u_hist[0]]
+            if design.Ac.shape[0] == len(self.xc) + self.m:   # the eps penalty carries ubar
+                self.xc = np.r_[self.xc, self.u_bar]
 
     def _finish_trial(self, ms):
         t, self.trial = self.trial, None
@@ -624,7 +744,7 @@ class AdaptiveMimoFreeTheta:
 
         r = self.dither_level * self.rng.standard_normal(self.m)
         if self.design is None:
-            self.u_int = self.u_int + self.warmup_gain * y
+            self.u_int = self.warmup_ff * self.u_int + self.warmup_gain * y
             u_ctrl = self.u_int
         else:
             dsg = self.design
@@ -635,7 +755,11 @@ class AdaptiveMimoFreeTheta:
         if self.design is not None:
             dsg = self.design
             self.xc = dsg.F_bar @ self.xc + dsg.L_bar @ y + dsg.Bd @ u
+        if self.Lam is not None:
+            self.zeta = self.F @ self.zeta + self.G_y @ y + self.G_u @ u
         self.y_hist = np.vstack([y, self.y_hist[:-1]])
+        if self.eps_pole is not None:
+            self.u_bar = self.eps_pole * self.u_bar + (1.0 - self.eps_pole) * self.u_hist[0]
         self.u_hist = np.vstack([u, self.u_hist[:-1]])
         self.p_sq += y2
         self.k += 1

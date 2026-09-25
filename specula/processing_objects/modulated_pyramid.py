@@ -79,6 +79,10 @@ class ModulatedPyramid(BaseProcessingObj):
         Tip defect size in lambda/D units (default: 0.0)
     pyr_tip_maya_ld : float [lambda/D], optional
         Maya Pyramid (i.e. flat tip) defect size in lambda/D units (default: 0.0)
+    pyr_def_seed : int, optional
+        Seed of the random heights of the edge and tip defects. The defect is a
+        property of the prism, so the calibration and the loop must see the same
+        one: with None (default) every instance draws a new one.
     min_pup_dist : float [pixels], optional
         Minimum pupil distance constraint (default: None)
     rotAnglePhInDeg : float [deg], optional
@@ -127,6 +131,7 @@ class ModulatedPyramid(BaseProcessingObj):
                  pyr_edge_def_ld: float = 0.0,
                  pyr_tip_def_ld: float = 0.0,
                  pyr_tip_maya_ld: float = 0.0,
+                 pyr_def_seed: int = None,
                  min_pup_dist: float = None,
                  rotAnglePhInDeg: float = 0.0,
                  xShiftPhInPixel: float = 0.0,
@@ -183,6 +188,7 @@ class ModulatedPyramid(BaseProcessingObj):
         self.pyr_edge_def_ld = pyr_edge_def_ld
         self.pyr_tip_def_ld = pyr_tip_def_ld
         self.pyr_tip_maya_ld = pyr_tip_maya_ld
+        self.pyr_def_seed = pyr_def_seed
         self.rotAnglePhInDeg = rotAnglePhInDeg
         self.xShiftPhInPixel = xShiftPhInPixel
         self.yShiftPhInPixel = yShiftPhInPixel
@@ -365,6 +371,16 @@ class ModulatedPyramid(BaseProcessingObj):
         
         return result
 
+    def _defect_rand(self, n, stream):
+        """n uniform samples in [0, 1) for the defect heights: reproducible with
+        pyr_def_seed (one stream per defect type), the global generator otherwise."""
+        seed = getattr(self, 'pyr_def_seed', None)
+        if seed is None:
+            return self.xp.random.rand(n)
+        import numpy
+        rng = numpy.random.default_rng([int(seed), stream])
+        return self.xp.asarray(rng.random(n), dtype=self.dtype)
+
     def get_pyr_tlt(self, p, c):
         A = int((p + c) // 2)
         pyr_tlt = self.xp.zeros((2 * A, 2 * A), dtype=self.dtype)
@@ -406,14 +422,14 @@ class ModulatedPyramid(BaseProcessingObj):
         idx_edge = self.xp.where((dx <= self.pyr_edge_def_ld * self.fft_res / 2) | 
                                  (dy <= self.pyr_edge_def_ld * self.fft_res / 2))
         if len(idx_edge[0]) > 0:
-            pyr_tlt[idx_edge] = self.xp.max(pyr_tlt) * self.xp.random.rand(len(idx_edge[0]))
+            pyr_tlt[idx_edge] = self.xp.max(pyr_tlt) * self._defect_rand(len(idx_edge[0]), 0)
             self.logger.info(f'get_pyr_tlt: {len(idx_edge[0])} pixels set to 0 to consider pyramid imperfect edges')
 
         # distance from tip
         d = self.xp.sqrt(xx ** 2 + yy ** 2)
         idx_tip = self.xp.where(d <= self.pyr_tip_def_ld * self.fft_res / 2)
         if len(idx_tip[0]) > 0:
-            pyr_tlt[idx_tip] = self.xp.max(pyr_tlt) * self.xp.random.rand(len(idx_tip[0]))
+            pyr_tlt[idx_tip] = self.xp.max(pyr_tlt) * self._defect_rand(len(idx_tip[0]), 1)
             self.logger.info(f'get_pyr_tlt: {len(idx_tip[0])} pixels set to 0 to consider pyramid imperfect tip')
 
         # distance from tip

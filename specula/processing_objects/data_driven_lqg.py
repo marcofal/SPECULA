@@ -67,6 +67,18 @@ class DataDrivenLqg(BaseFilter):
     warmup_gain : float or list[float], optional
         Integrator gain of the LQG modes during warm-up (default: int_gain of
         that mode). Scalar or one per LQG mode.
+    int_ff : float or list[float]
+        Forgetting factor of the integrator of the other modes, as `ff` of
+        Integrator: u_k = ff u_{k-1} + g y_k. 1 (default) is the pure integrator,
+        ff < 1 a leaky one. Scalar or one per mode.
+    warmup_ff : float or list[float], optional
+        Forgetting factor of the warm-up integrator of the LQG modes (default:
+        int_ff of that mode). Scalar or one per LQG mode.
+    warmup_num, warmup_den : list[float] or list[list[float]], optional
+        free_theta: run this IIR filter instead of the warm-up integrator, and fall
+        back to it on a revert to no design. Coefficients as IirFilterData (oldest
+        first, num[-1] multiplies y_k, den[-1] multiplies u_k). One row for all the
+        LQG modes or one row per LQG mode.
     dither_std, noise_var : float or list[float]
         Dither std and measurement-noise variance, in the units of delta_comm
         (scalar or one per LQG mode).
@@ -105,8 +117,16 @@ class DataDrivenLqg(BaseFilter):
         once if a single frame exceeds hard_abort_ratio times it (an unstable loop grows
         by orders of magnitude within the 20 frames the averaged test needs).
     mimo_structure : str
-        mimo_free_theta: 'full' (every entry of Theta free, default) or 'diag_ar'
-        (each mode's own AR, full cross-talk in the command part).
+        mimo_free_theta: 'full' (every entry of Theta free, default), 'diag_ar'
+        (each mode's own AR, full cross-talk in the command part) or 'diag_plant'
+        (full coupling in the measurement part, each mode's own commands only).
+    theta_poles : list, optional
+        mimo_free_theta: poles of the nonminimal filters (Lambda, ell) of
+        nonminimal_observer.cascade_filter, one list for both halves of zeta (n_theta is
+        then its length). Default: the buffers (all poles at 0).
+    theta_refit_u : bool
+        mimo_free_theta: after moving the model poles inside the unit circle, refit the
+        command part of Theta by least squares with the measurement part fixed.
     corner_gains : bool
         mimo_free_theta, var_lqg: also check stability for per-mode gains at the
         corners of gain_range (default True).
@@ -120,7 +140,7 @@ class DataDrivenLqg(BaseFilter):
         prediction to zero and a steady aberration is left partly uncorrected. bias_tau
         None disables it.
     eps_grid, eps_tau : list of float, float
-        var_lqg: LQR penalty eps |u_k - ubar_k|^2 on top of rho |u_k - u_{k-1}|^2, with
+        var_lqg, mimo_free_theta: LQR penalty eps |u_k - ubar_k|^2 on top of rho |u_k - u_{k-1}|^2, with
         ubar the running command mean of time constant eps_tau (eps_tau None: the absolute
         command, which leaves a static error). It buys sensitivity margin, so the tuner can
         keep rho low.
@@ -168,6 +188,10 @@ class DataDrivenLqg(BaseFilter):
                  lqg_modes: list = (0, 1),
                  int_gain=0.4,
                  warmup_gain=None,
+                 int_ff=1.0,
+                 warmup_ff=None,
+                 warmup_num: list = None,
+                 warmup_den: list = None,
                  delay: float = 1,
                  n_g: int = 3,
                  p: int = 8,
@@ -196,6 +220,10 @@ class DataDrivenLqg(BaseFilter):
                  abort_ratio: float = 1.5,
                  hard_abort_ratio: float = 4.0,
                  mimo_structure: str = 'full',
+                 theta_poles: list = None,
+                 theta_refit_u: bool = False,
+                 var_block_size: int = None,
+                 plant_min_dither: float = 1.0,
                  corner_gains: bool = True,
                  var_margin: float = 0.02,
                  holdout: float = 0.25,
@@ -228,6 +256,16 @@ class DataDrivenLqg(BaseFilter):
         n_lqg = len(self.lqg_modes)
         warmup = (self.int_gain[self.lqg_modes] if warmup_gain is None
                   else self._per_mode(warmup_gain, n_lqg, 'warmup_gain'))
+        self.int_ff = self._per_mode(int_ff, self.n_modes, 'int_ff')
+        warmup_ff = (self.int_ff[self.lqg_modes] if warmup_ff is None
+                     else self._per_mode(warmup_ff, n_lqg, 'warmup_ff'))
+        if np.any(self.int_ff > 1) or np.any(self.int_ff <= 0) or np.any(warmup_ff > 1) or np.any(warmup_ff <= 0):
+            raise ValueError("int_ff and warmup_ff must be in (0, 1]")
+        if (warmup_num is not None or warmup_den is not None) and method != 'free_theta':
+            raise ValueError("warmup_num / warmup_den are only supported with method 'free_theta'")
+        warmup_iir = [(self._per_mode_rows(warmup_num, n_lqg, 'warmup_num')[i],
+                       self._per_mode_rows(warmup_den, n_lqg, 'warmup_den')[i])
+                      if warmup_num is not None else (None, None) for i in range(n_lqg)]
         dither = self._per_mode(dither_std, n_lqg, 'dither_std')
         noise = self._per_mode(noise_var, n_lqg, 'noise_var')
         self.log_file = log_file
@@ -255,27 +293,39 @@ class DataDrivenLqg(BaseFilter):
                 min_samples=min_samples, structure=mimo_structure, dither_std=dither,
                 dither_after=after, switch_designs=switch_designs, redesign_every=redesign_every,
                 ms_limit_db=ms_limit_db, gain_range=gain_range, delay_margin=delay_margin,
-                warmup_gain=warmup, acceptance=acceptance, accept_ratio=accept_ratio,
+                warmup_gain=warmup, warmup_ff=warmup_ff, acceptance=acceptance, accept_ratio=accept_ratio,
                 abort_ratio=abort_ratio, hard_abort_ratio=hard_abort_ratio, n_taps_log=n_g, max_radius=max_radius, corners=corner_gains,
                 supervisor=supervisor, blowup_factor=blowup_factor, fast_window=fast_window,
-                holdoff=holdoff, rng=np.random.default_rng(rng.integers(2**32)),
+                holdoff=holdoff, poles=theta_poles, refit_u=theta_refit_u,
+                rho_grid=tuple(rho_grid) if rho_grid else (0.0, 1.0, 10.0),
+                eps_grid=tuple(eps_grid) if eps_grid else (0.0,),
+                eps_tau=eps_tau if eps_grid else None,
+                rng=np.random.default_rng(rng.integers(2**32)),
                 name=f"modes {self.lqg_modes}"))
             self._ctrl_rows.append(list(range(n_lqg)))
         elif method == 'var_lqg':
-            self.mode_ctrl.append(AdaptiveVarLQG(
-                dt=simul_params.time_step, m=n_lqg, n_g=n_g, p=p, window=plant_window,
-                min_samples=min_samples, dither_std=dither, dither_after=after,
-                switch_designs=switch_designs, redesign_every=redesign_every, ms_limit_db=ms_limit_db,
-                gain_range=gain_range, delay_margin=delay_margin, warmup_gain=warmup,
-                var_margin=var_margin, holdout=holdout, siso_first=siso_first, acceptance=acceptance,
-                bias_tau=bias_tau, bias_rel=bias_rel, eps_tau=eps_tau,
-                rho_grid=tuple(rho_grid) if rho_grid else (0.0, 0.1, 0.3, 1.0, 10.0),
-                eps_grid=tuple(eps_grid) if eps_grid else (0.0, 0.1),
-                accept_ratio=accept_ratio, abort_ratio=abort_ratio, hard_abort_ratio=hard_abort_ratio, max_radius=max_radius,
-                corners=corner_gains, supervisor=supervisor, blowup_factor=blowup_factor,
-                fast_window=fast_window, holdoff=holdoff, rng=np.random.default_rng(rng.integers(2**32)),
-                name=f"modes {self.lqg_modes}"))
-            self._ctrl_rows.append(list(range(n_lqg)))
+            # one vector-AR controller on all the LQG modes, or one per block of
+            # var_block_size consecutive LQG modes (identified and designed separately:
+            # the design cost grows with the cube of the block, not of all the modes)
+            bs = n_lqg if not var_block_size else int(var_block_size)
+            self._blocks = [list(range(i0, min(i0 + bs, n_lqg))) for i0 in range(0, n_lqg, bs)]
+            for blk in self._blocks:
+                modes_b = [self.lqg_modes[q] for q in blk]
+                self.mode_ctrl.append(AdaptiveVarLQG(
+                    dt=simul_params.time_step, m=len(blk), n_g=n_g, p=p, window=plant_window,
+                    min_samples=min_samples, dither_std=dither[blk], dither_after=after[blk],
+                    switch_designs=switch_designs, redesign_every=redesign_every, ms_limit_db=ms_limit_db,
+                    gain_range=gain_range, delay_margin=delay_margin, warmup_gain=warmup[blk],
+                    warmup_ff=warmup_ff[blk], plant_min_dither=plant_min_dither,
+                    var_margin=var_margin, holdout=holdout, siso_first=siso_first, acceptance=acceptance,
+                    bias_tau=bias_tau, bias_rel=bias_rel, eps_tau=eps_tau,
+                    rho_grid=tuple(rho_grid) if rho_grid else (0.0, 0.1, 0.3, 1.0, 10.0),
+                    eps_grid=tuple(eps_grid) if eps_grid else (0.0, 0.1),
+                    accept_ratio=accept_ratio, abort_ratio=abort_ratio, hard_abort_ratio=hard_abort_ratio, max_radius=max_radius,
+                    corners=corner_gains, supervisor=supervisor, blowup_factor=blowup_factor,
+                    fast_window=fast_window, holdoff=holdoff, rng=np.random.default_rng(rng.integers(2**32)),
+                    name=f"modes {modes_b}"))
+                self._ctrl_rows.append(list(blk))
         joint = method in ('mimo_free_theta', 'var_lqg')
         for i, m in enumerate(self.lqg_modes if not joint else []):
             mode_rng = np.random.default_rng(rng.integers(2**32))
@@ -285,7 +335,7 @@ class DataDrivenLqg(BaseFilter):
                                        min_samples=min_samples, dither_std=dither[i],
                                        redesign_every=redesign_every, ms_limit_db=ms_limit_db,
                                        gain_range=gain_range, delay_margin=delay_margin,
-                                       plant_rel_std_max=plant_rel_std_max, warmup_gain=warmup[i],
+                                       plant_rel_std_max=plant_rel_std_max, warmup_gain=warmup[i], warmup_ff=warmup_ff[i],
                                        noise_var=noise[i], max_radius=max_radius,
                                        supervisor=supervisor, blowup_factor=blowup_factor,
                                        fast_window=fast_window, holdoff=holdoff,
@@ -297,7 +347,9 @@ class DataDrivenLqg(BaseFilter):
                                              dither_after=after[i], switch_designs=switch_designs,
                                              redesign_every=redesign_every, ms_limit_db=ms_limit_db,
                                              gain_range=gain_range, delay_margin=delay_margin,
-                                             warmup_gain=warmup[i], acceptance=acceptance,
+                                             warmup_gain=warmup[i], warmup_ff=warmup_ff[i],
+                                             warmup_num=warmup_iir[i][0], warmup_den=warmup_iir[i][1],
+                                             acceptance=acceptance,
                                              accept_ratio=accept_ratio, abort_ratio=abort_ratio, hard_abort_ratio=hard_abort_ratio,
                                              n_taps_log=n_g, max_radius=max_radius,
                                              supervisor=supervisor,
@@ -339,6 +391,17 @@ class DataDrivenLqg(BaseFilter):
             raise ValueError(f"{name} must be a scalar or have {n} elements, got {arr.size}")
         return arr
 
+    @staticmethod
+    def _per_mode_rows(value, n, name):
+        if value is None:
+            return [None] * n
+        rows = [np.asarray(r, dtype=float) for r in np.atleast_2d(np.asarray(value, dtype=float))]
+        if len(rows) == 1:
+            return rows * n
+        if len(rows) != n:
+            raise ValueError(f"{name} must be one row or {n} rows, got {len(rows)}")
+        return rows
+
     @classmethod
     def input_names(cls):
         return super().input_names()
@@ -356,11 +419,16 @@ class DataDrivenLqg(BaseFilter):
 
         # integrator modes
         mask = self._int_mask
-        self._u[mask] += self.int_gain[mask] * gain_mod[mask] * y[mask]
+        self._u[mask] = self.int_ff[mask] * self._u[mask] + self.int_gain[mask] * gain_mod[mask] * y[mask]
 
         # adaptive LQG modes
         dither = np.zeros(self.n_modes)
-        if self.method in ('mimo_free_theta', 'var_lqg'):
+        if self.method == 'var_lqg':
+            for i, blk in enumerate(self._blocks):
+                idx = [self.lqg_modes[q] for q in blk]
+                self._u[idx], dither[idx] = self.mode_ctrl[i].step(y[idx])
+                self._log_new_events(i)
+        elif self.method == 'mimo_free_theta':
             lqg = self.lqg_modes
             self._u[lqg], dither[lqg] = self.mode_ctrl[0].step(y[lqg])
             self._log_new_events(0)

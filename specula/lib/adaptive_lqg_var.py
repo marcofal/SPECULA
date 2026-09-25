@@ -205,7 +205,7 @@ class AdaptiveVarLQG:
 
     def __init__(self, dt, m, n_g=3, p=8, window=4000, min_samples=None, dither_std=5.0,
                  dither_after=None, switch_designs=2, redesign_every=250, ms_limit_db=6.0,
-                 gain_range=(0.5, 1.5), delay_margin=0.5, warmup_gain=0.4, var_margin=0.02,
+                 gain_range=(0.5, 1.5), delay_margin=0.5, warmup_gain=0.4, warmup_ff=1.0, var_margin=0.02,
                  holdout=0.25, siso_first=1, bias_tau=2.0, bias_rel=0.1,
                  rho_grid=(0.0, 0.1, 0.3, 1.0, 10.0), eps_grid=(0.0, 0.1), eps_tau=5e-3,
                  plant_min_dither=1.0, allow_var=True, acceptance="residual",
@@ -231,6 +231,7 @@ class AdaptiveVarLQG:
         self.bias_pole = None if bias_tau is None else float(np.exp(-self.dt / float(bias_tau)))
         self.bias_rel = float(bias_rel)
         self.warmup_gain = np.broadcast_to(np.asarray(warmup_gain, float), (self.m,)).copy()
+        self.warmup_ff = np.broadcast_to(np.asarray(warmup_ff, float), (self.m,)).copy()
         self.var_margin, self.holdout, self.siso_first = float(var_margin), float(holdout), int(siso_first)
         self.plant_min_dither, self.allow_var = float(plant_min_dither), bool(allow_var)
         self.acceptance = acceptance
@@ -408,7 +409,7 @@ class AdaptiveVarLQG:
 
         r = self.dither_level * self.rng.standard_normal(self.m)
         if self.design is None:
-            self.u_int = self.u_int + self.warmup_gain * y
+            self.u_int = self.warmup_ff * self.u_int + self.warmup_gain * y
             u_ctrl = self.u_int
         else:
             dsg = self.design

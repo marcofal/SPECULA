@@ -858,3 +858,17 @@ class TestModulatedPyramid(unittest.TestCase):
         # Assertions (flexible matching)
         self.assertTrue(any("imperfect edges" in msg for msg in calls))
         self.assertTrue(any("imperfect tip" in msg for msg in calls))
+
+
+class TestPyramidDefectSeed(unittest.TestCase):
+
+    def _tlt(self, seed):
+        simul_params = SimulParams(pixel_pupil=72, pixel_pitch=0.008333333, time_step=0.001)
+        pyr = ModulatedPyramid(simul_params=simul_params, wavelengthInNm=640, fov=16.0,
+                               pup_diam=36, pup_dist=52, output_resolution=120, mod_amp=0.0,
+                               pyr_tip_def_ld=1.0, pyr_def_seed=seed, target_device_idx=-1)
+        return cpuArray(pyr.pyr_tlt)
+
+    def test_tip_defect_is_reproducible_with_a_seed(self):
+        np.testing.assert_array_equal(self._tlt(3), self._tlt(3))
+        self.assertFalse(np.array_equal(self._tlt(3), self._tlt(4)))

@@ -12,6 +12,8 @@ from specula.lib import adaptive_lqg as al
 from specula.lib import adaptive_lqg_mimo as am
 from specula.lib import adaptive_lqg_var as avar
 from specula.processing_objects.data_driven_lqg import DataDrivenLqg
+from specula.data_objects.iir_filter_data import IirFilterData
+from specula.processing_objects.iir_filter import IirFilter
 from specula.processing_objects.integrator import Integrator
 
 
@@ -187,6 +189,37 @@ class TestAdaptiveLqgMimoLib(unittest.TestCase):
             np.testing.assert_allclose(rls.theta[ix, j], b, rtol=1e-6, atol=1e-8)
             self.assertEqual(np.abs(np.delete(rls.theta[:, j], ix)).max(), 0.0)
 
+    def test_stabilize_theta_filters(self):
+        """Shift filters: the buffer move. Cascade filters: the model poles outside the
+        radius land on it, the others stay."""
+        from specula.lib.nonminimal_observer import cascade_filter
+        rng = np.random.default_rng(0)
+        m, N = 2, 5
+        Th = 0.4 * rng.standard_normal((2 * N * m, m))
+        Th[:m] += 1.2 * np.eye(m)
+        a, na = am.stabilize_theta(Th, m, 0.99)
+        b, nb = am.stabilize_theta_filters(Th, np.eye(N, k=-1), np.eye(N)[0], m, 0.99)
+        self.assertEqual(na, nb)
+        np.testing.assert_allclose(a, b, atol=1e-12)
+        Lam, ell = cascade_filter([0, 0, 0.5, 0.5, 0.5])
+        F, Gy, Gu = am.filter_matrices(Lam, ell, m)
+        t2, n = am.stabilize_theta_filters(Th, Lam, ell, m, 0.99)
+        ev0 = np.linalg.eigvals(am.filter_model(Th, F, Gy, Gu)[0])
+        ev1 = np.linalg.eigvals(am.filter_model(t2, F, Gy, Gu)[0])
+        self.assertGreater(n, 0)
+        self.assertLessEqual(np.abs(ev1).max(), 0.99 + 1e-9)
+        for x in ev0[np.abs(ev0) <= 0.99]:
+            self.assertLess(np.min(np.abs(ev1 - x)), 1e-8)
+
+    def test_own_plant_masks(self):
+        """'diag_plant': mode i sees every past measurement and only its own commands."""
+        N, m = 3, 4
+        masks = am.own_plant_masks(N, m)
+        for i, ix in enumerate(masks):
+            np.testing.assert_array_equal(ix[:N * m], np.arange(N * m))
+            np.testing.assert_array_equal((ix[N * m:] - N * m) % m, i)
+            self.assertEqual(len(ix), N * (m + 1))
+
     def test_block_diagonal_theta_gives_siso_controllers(self):
         N = 5
         tha = al.theta_from_fir_ar([0.0, -1.0], [1.5, -0.7, 0.1])
@@ -358,6 +391,55 @@ class TestDataDrivenLqgObject(unittest.TestCase):
         np.testing.assert_allclose(design[0, len(cols):], accepted[-1]["g"], atol=1e-5)
 
 
+    def test_object_leaky_integrator(self):
+        """int_ff makes the integrator modes and the warm-up of the LQG modes leaky,
+        exactly as the ff of the SPECULA Integrator."""
+        simul_params = SimulParams(time_step=0.001)
+        T = 1500
+        d = np.column_stack([ar2_turbulence(T, seed=s, std=50.0) for s in (1, 2, 3)])
+        ref = Integrator(int_gain=[0.4], ff=[0.98], n_modes=[3], delay=1, target_device_idx=-1)
+        comm_ref = self._loop(ref, d, ref.seconds_to_t(0.001))
+        for method in ('free_theta', 'var_lqg'):
+            # no dither and no design within T: the LQG mode is still in warm-up
+            obj = DataDrivenLqg(simul_params, n_modes=3, lqg_modes=[1], int_gain=0.4,
+                                int_ff=0.98, method=method, dither_std=0.0,
+                                min_samples=10 * T, delay=1, target_device_idx=-1)
+            comm = self._loop(obj, d, obj.seconds_to_t(0.001))
+            np.testing.assert_allclose(comm, comm_ref, rtol=1e-4, atol=1e-3, err_msg=method)
+        with self.assertRaises(ValueError):
+            DataDrivenLqg(simul_params, n_modes=3, lqg_modes=[1], int_ff=1.1, target_device_idx=-1)
+
+    def test_object_iir_warmup(self):
+        """warmup_num/den make the free-theta warm-up run that IIR, exactly as the
+        SPECULA IirFilter; after the first accepted design the LQG takes over."""
+        simul_params = SimulParams(time_step=0.001)
+        num = [0.19125, -0.65, 0.5]                     # MORFEO tip-tilt IIR
+        den = [0.9995, -1.9995, 1.0]
+        T = 1500
+        d = np.column_stack([ar2_turbulence(T, seed=s, std=50.0) for s in (1, 2)])
+        data = IirFilterData(ordnum=[3, 3], ordden=[3, 3], num=[num, num], den=[den, den],
+                             target_device_idx=-1)
+        ref = IirFilter(data, delay=1, target_device_idx=-1)
+        comm_ref = self._loop(ref, d, ref.seconds_to_t(0.001))
+        obj = DataDrivenLqg(simul_params, n_modes=2, lqg_modes=[0, 1], method='free_theta',
+                            warmup_num=num, warmup_den=den, dither_std=0.0,
+                            min_samples=10 * T, delay=1, target_device_idx=-1)
+        comm = self._loop(obj, d, obj.seconds_to_t(0.001))
+        np.testing.assert_allclose(comm, comm_ref, rtol=1e-4, atol=1e-3)
+
+        T = 5000
+        d = np.column_stack([ar2_turbulence(T, seed=s, std=50.0) for s in (1, 2)])
+        obj = DataDrivenLqg(simul_params, n_modes=2, lqg_modes=[0, 1], method='free_theta',
+                            warmup_num=[num, num], warmup_den=[den, den], n_theta=6,
+                            plant_window=2500, min_samples=1500, dither_std=2.0,
+                            dither_after=0.5, delay=1, target_device_idx=-1)
+        self._loop(obj, d, obj.seconds_to_t(0.001))
+        for ctrl in obj.mode_ctrl:
+            self.assertTrue(any(ev == "accepted" for _, ev, _ in ctrl.log), ctrl.log)
+        with self.assertRaises(ValueError):
+            DataDrivenLqg(simul_params, n_modes=2, warmup_num=num, warmup_den=den,
+                          target_device_idx=-1)          # structured: no IIR warm-up
+
     def test_object_free_theta(self):
         simul_params = SimulParams(time_step=0.001)
         T = 5000
@@ -453,6 +535,79 @@ class TestDataDrivenLqgObject(unittest.TestCase):
         res1_int = d[1:, 1] - comm_ref[:-1, 1]
         self.assertLess(np.sqrt(np.mean(res1[-2000:] ** 2)), 0.5 * np.sqrt(np.mean(res1_int[-2000:] ** 2)))
 
+
+    def test_object_mimo_free_theta_diag_plant(self):
+        """The frozen-flow pair of test_object_var_lqg with a free Theta, coupled in the
+        measurement part only: mode 1 is predicted from mode 0's past."""
+        from scipy.signal import lfilter
+        simul_params = SimulParams(time_step=0.001)
+        T = 7000
+        rng = np.random.default_rng(4)
+        d0 = lfilter([1.0], [1.0, -0.8], rng.standard_normal(T))
+        d0 = 50.0 * d0 / d0.std()
+        d1 = np.r_[np.zeros(3), d0[:-3]] + 5.0 * rng.standard_normal(T)
+        d = np.column_stack([d0, d1, ar2_turbulence(T, seed=3, std=50.0)])
+
+        obj = DataDrivenLqg(simul_params, n_modes=3, lqg_modes=[0, 1], int_gain=0.4,
+                            method='mimo_free_theta', mimo_structure='diag_plant', n_theta=6,
+                            plant_window=2500, min_samples=1500, dither_std=5.0, delay=1,
+                            target_device_idx=-1)
+        comm = self._loop(obj, d, obj.seconds_to_t(0.001))
+        ref = Integrator(int_gain=[0.4], n_modes=[3], delay=1, target_device_idx=-1)
+        comm_ref = self._loop(ref, d, ref.seconds_to_t(0.001))
+
+        ctrl = obj.mode_ctrl[0]
+        self.assertTrue([1 for _, ev, _ in ctrl.log if ev == "accepted"], f"no design accepted: {ctrl.log}")
+        Theta = ctrl.design.C.T                           # (2Nm, m)
+        N, m = 6, 2
+        self.assertEqual(np.abs(Theta[N * m + 1::m, 0]).max(), 0.0)   # no u_1 in mode 0
+        self.assertEqual(np.abs(Theta[N * m::m, 1]).max(), 0.0)       # no u_0 in mode 1
+        res1 = d[1:, 1] - comm[:-1, 1]
+        res1_int = d[1:, 1] - comm_ref[:-1, 1]
+        self.assertLess(np.sqrt(np.mean(res1[-2000:] ** 2)), 0.5 * np.sqrt(np.mean(res1_int[-2000:] ** 2)))
+
+    def test_object_mimo_free_theta_filters(self):
+        """test_object_mimo_free_theta on stable, non-deadbeat filters: the controller
+        state is the filter state and the loop beats the integrator."""
+        simul_params = SimulParams(time_step=0.001)
+        T = 6000
+        d = np.column_stack([ar2_turbulence(T, seed=s, std=50.0) for s in (1, 2, 3)])
+        a = np.deg2rad(30.0)
+        M = np.eye(3)
+        M[:2, :2] = [[np.cos(a), -np.sin(a)], [np.sin(a), np.cos(a)]]
+        obj = DataDrivenLqg(simul_params, n_modes=3, lqg_modes=[0, 1], int_gain=0.4,
+                            method='mimo_free_theta', theta_poles=[0, 0, 0.5, 0.5, 0.5, 0.5],
+                            theta_refit_u=True, plant_window=2500, min_samples=1500,
+                            dither_std=2.0, dither_after=0.5, delay=1, target_device_idx=-1)
+        comm = self._loop(obj, d, obj.seconds_to_t(0.001), M)
+        ref = Integrator(int_gain=[0.4], n_modes=[3], delay=1, target_device_idx=-1)
+        comm_ref = self._loop(ref, d, ref.seconds_to_t(0.001), M)
+        ctrl = obj.mode_ctrl[0]
+        self.assertEqual(ctrl.N, 6)
+        self.assertTrue([1 for _, ev, _ in ctrl.log if ev == "accepted"], f"no design accepted: {ctrl.log}")
+        res = d[1:, :2] - (M @ comm[:-1].T).T[:, :2]
+        res_int = d[1:, :2] - (M @ comm_ref[:-1].T).T[:, :2]
+        self.assertLess(np.sqrt(np.mean(res[-2000:] ** 2)), np.sqrt(np.mean(res_int[-2000:] ** 2)))
+
+    def test_object_var_lqg_blocks(self):
+        """var_block_size splits the LQG modes into independent vector-AR controllers:
+        with blocks of one mode each, every block runs its own design on its mode only."""
+        simul_params = SimulParams(time_step=0.001)
+        T = 6000
+        d = np.column_stack([ar2_turbulence(T, seed=s, std=50.0) for s in (1, 2, 3)])
+        obj = DataDrivenLqg(simul_params, n_modes=3, lqg_modes=[0, 2], int_gain=0.4,
+                            method='var_lqg', p=4, n_g=3, plant_window=2500, min_samples=1500,
+                            dither_std=5.0, var_block_size=1, delay=1, target_device_idx=-1)
+        comm = self._loop(obj, d, obj.seconds_to_t(0.001))
+        self.assertEqual(len(obj.mode_ctrl), 2)
+        self.assertEqual([c.m for c in obj.mode_ctrl], [1, 1])
+        for ctrl in obj.mode_ctrl:
+            accepted = [info for _, ev, info in ctrl.log if ev == "accepted"]
+            self.assertTrue(accepted, f"no design accepted in {ctrl.name}: {ctrl.log}")
+        # mode 1 stays on the integrator
+        ref = Integrator(int_gain=[0.4], n_modes=[3], delay=1, target_device_idx=-1)
+        comm_ref = self._loop(ref, d, ref.seconds_to_t(0.001))
+        np.testing.assert_allclose(comm[:, 1], comm_ref[:, 1], rtol=1e-4, atol=1e-3)
 
     def test_object_identification_only_modes(self):
         """ident_modes are dithered and identified but stay on the integrator: the taps
