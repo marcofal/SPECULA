@@ -29,7 +29,7 @@ With structure 'full' (default) every entry of Theta is free: A(q) y = B(q) u + 
 A and B full, the plant A^-1 B and the turbulence A^-1 e share the denominator, the
 optical gains and any cross-talk of the plant are inside Theta, and no plant/turbulence
 split is imposed. 'diag_plant' keeps each mode's own commands only (coupling in the
-turbulence part), 'diag_ar' each mode's own measurements only (deadbeat register only).
+turbulence part), 'diag_ar' each mode's own measurements only (time-shift register only).
 
 Theta is fitted by sliding-window least squares on (zeta_k, y_k) over window_s. The dither
 makes the command part identifiable in closed loop and stays on. Before each design the
@@ -44,23 +44,33 @@ state estimate); LQR on sum |y|^2 + rho |u_k - u_{k-1}|^2 + eps |u_k - ubar_k|^2
 newest measurement. (s, rho, eps) on a grid: the smallest predicted residual among the
 designs that pass the checks on the model plant (Ms, gain range with per-mode corners,
 extra delay). Every new design runs on trial for one redesign period and is kept if its
-residual is not worse than accept_ratio times the previous one.
+residual is not worse than accept_ratio times the previous one; a supervisor reverts to
+the last good controller if the residual blows up.
+
+Before the first accepted design the LQG modes run the integrator of the other modes
+(int_gain, int_ff); gain_mod scales the integrator modes only.
 
 Validated on the RAMA twin (LEO tracking, pyramid tip defect, modes 0-4, 40 s runs):
-deadbeat register, full Theta, 20 s window, 5 nm dither, the defaults below:
-106 nm rms on modes 0-4 once running, against 108 for DdLqg 'mimo' (vector AR) and 148
-for the leaky integrator. Poles of Lambda at 0.5 gave the same result; slower poles make
-the low-frequency plant ill-determined. With a 10 s window or the grid rho in {0, 1, 10}
-it was clearly worse.
+time-shift register, full Theta, 20 s window, 5 nm dither, the defaults below: 106 nm rms
+on modes 0-4 once running, against 108 for DdLqg 'mimo' (vector AR) and 148 for the leaky
+integrator.
 
-A thin layer on DataDrivenLqg (method 'mimo_free_theta'): same inputs, outputs and event
-log. Library: specula.lib.adaptive_lqg_mimo.
+Algorithm: specula.lib.adaptive_lqg_mimo.AdaptiveMimoFreeTheta.
 """
+import json
+import os
+
+import numpy as np
+
+from specula import cpuArray
+from specula.base_processing_obj import OutputDesc
+from specula.base_value import BaseValue
 from specula.data_objects.simul_params import SimulParams
-from specula.processing_objects.data_driven_lqg import DataDrivenLqg
+from specula.lib.adaptive_lqg_mimo import AdaptiveMimoFreeTheta
+from specula.processing_objects.base_filter import BaseFilter
 
 
-class FreeThetaLqg(DataDrivenLqg):
+class FreeThetaLqg(BaseFilter):
     """MIMO LQG on a free Theta, y_k = Theta^T zeta_k + e_k (see the module docstring).
 
     Parameters
@@ -80,7 +90,7 @@ class FreeThetaLqg(DataDrivenLqg):
         Default: the time-shift register (all poles at 0).
     int_gain, int_ff : float or list[float]
         Integrator u_k = int_ff u_{k-1} + int_gain y_k of the other modes and of the
-        warm-up; int_ff < 1 is a leaky integrator.
+        warm-up (scalar or one value per mode of delta_comm); int_ff < 1 is leaky.
     train_s : float
         Seconds of data before the first design.
     window_s : float, optional
@@ -104,12 +114,17 @@ class FreeThetaLqg(DataDrivenLqg):
     accept_ratio, abort_ratio, hard_abort_ratio : float
         Acceptance of a trial, abort on the fast residual, abort on a single frame, as
         multiples of the residual of the last clean period.
+    n_taps : int
+        Samples of the implied plant impulse response in out_design and in the log.
     log_file : str, optional
         JSON file with the design events, written at the end.
     seed : int
     delay : float
         Delay of the output command [frames], as for Integrator.
     """
+
+    DESIGN_COLUMNS = ['active', 'pred_std', 's', 'rho', 'eps', 'n_accepted', 'n_rejected', 'n_reverted']
+    _EVENT_COLUMN = {'accepted': 5, 'rejected': 6, 'trial rejected': 6, 'trial aborted': 6, 'reverted': 7}
 
     def __init__(self,
                  simul_params: SimulParams,
@@ -138,37 +153,139 @@ class FreeThetaLqg(DataDrivenLqg):
                  accept_ratio: float = 1.05,
                  abort_ratio: float = 1.5,
                  hard_abort_ratio: float = 4.0,
+                 n_taps: int = 3,
                  log_file: str = None,
                  seed: int = 0,
                  delay: float = 1,
                  target_device_idx: int = None,
                  precision: int = None):
-        structure = str(structure).lower()
-        if structure not in ('full', 'diag_plant', 'diag_ar'):
+        super().__init__(nfilter=n_modes, delay=delay,
+                         target_device_idx=target_device_idx, precision=precision)
+
+        self.n_modes = int(n_modes)
+        self.lqg_modes = [int(m) for m in lqg_modes]
+        if not self.lqg_modes:
+            raise ValueError("lqg_modes is empty")
+        if any(m < 0 or m >= self.n_modes for m in self.lqg_modes):
+            raise ValueError(f"lqg_modes {self.lqg_modes} out of range for n_modes {self.n_modes}")
+        if len(set(self.lqg_modes)) != len(self.lqg_modes):
+            raise ValueError("lqg_modes contains duplicates")
+        self.structure = str(structure).lower()
+        if self.structure not in ('full', 'diag_plant', 'diag_ar'):
             raise ValueError(f"structure must be 'full', 'diag_plant' or 'diag_ar', got {structure!r}")
         if poles is not None:
             poles = [float(p) for p in poles]
-            if structure == 'diag_ar':
+            if self.structure == 'diag_ar':
                 raise ValueError("structure 'diag_ar' needs the time-shift register (poles=None)")
-            n_theta = len(poles)
+        self.int_gain = self._per_mode(int_gain, self.n_modes, 'int_gain')
+        self.int_ff = self._per_mode(int_ff, self.n_modes, 'int_ff')
+        if np.any(self.int_ff > 1) or np.any(self.int_ff <= 0):
+            raise ValueError("int_ff must be in (0, 1]")
+
         dt = simul_params.time_step
         frames = lambda s: max(int(round(float(s) / dt)), 1)
         train, redesign = frames(train_s), frames(redesign_s)
         window = frames(window_s) if window_s is not None else train
         if window < train:
             raise ValueError("window_s must be >= train_s: the first design needs a full window")
-        super().__init__(simul_params=simul_params, n_modes=n_modes, lqg_modes=list(lqg_modes),
-                         int_gain=int_gain, int_ff=int_ff, delay=delay,
-                         method='mimo_free_theta', mimo_structure=structure, n_theta=int(n_theta),
-                         theta_poles=poles, theta_refit_u=refit_u, plant_window=window,
-                         theta_window=window, min_samples=train, dither_std=dither_std,
-                         dither_after=dither_std if dither_after is None else dither_after,
-                         switch_designs=switch_designs, redesign_every=redesign,
-                         rho_grid=list(rho_grid), eps_grid=list(eps_grid), eps_tau=eps_tau,
-                         ms_limit_db=ms_limit_db, gain_range=list(gain_range),
-                         delay_margin=delay_margin, corner_gains=corner_gains,
-                         max_radius=max_radius, acceptance='residual',
-                         accept_ratio=accept_ratio, abort_ratio=abort_ratio,
-                         hard_abort_ratio=hard_abort_ratio, seed=seed, log_file=log_file,
-                         target_device_idx=target_device_idx, precision=precision)
-        self.structure = structure
+
+        m = len(self.lqg_modes)
+        dither = self._per_mode(dither_std, m, 'dither_std')
+        after = dither if dither_after is None else self._per_mode(dither_after, m, 'dither_after')
+        lqg = self.lqg_modes
+        rng = np.random.default_rng(seed)
+        self.ctrl = AdaptiveMimoFreeTheta(
+            dt=dt, m=m, N=int(n_theta), window=window, min_samples=train, structure=self.structure,
+            dither_std=dither, dither_after=after, switch_designs=switch_designs,
+            redesign_every=redesign, ms_limit_db=ms_limit_db, gain_range=tuple(gain_range),
+            delay_margin=delay_margin, warmup_gain=self.int_gain[lqg], warmup_ff=self.int_ff[lqg],
+            acceptance='residual', accept_ratio=accept_ratio, abort_ratio=abort_ratio,
+            hard_abort_ratio=hard_abort_ratio, n_taps_log=n_taps, max_radius=max_radius,
+            corners=corner_gains, poles=poles, refit_u=refit_u, rho_grid=tuple(rho_grid),
+            eps_grid=tuple(eps_grid), eps_tau=eps_tau if any(eps_grid) else None,
+            rng=np.random.default_rng(rng.integers(2**32)), name=f"modes {lqg}")
+        self.log_file = log_file
+        self._n_events = 0
+
+        self._int_mask = np.ones(self.n_modes, dtype=bool)
+        self._int_mask[lqg] = False
+        self._u = np.zeros(self.n_modes)                 # CPU float64 command state
+
+        self.out_dither = BaseValue(value=self.xp.zeros(self.n_modes, dtype=self.dtype),
+                                    target_device_idx=target_device_idx, precision=precision)
+        self.outputs['out_dither'] = self.out_dither
+        self._design = np.zeros((m, len(self.DESIGN_COLUMNS) + int(n_taps)))
+        self._design[:, 1:5] = np.nan
+        self._design[:, len(self.DESIGN_COLUMNS):] = np.nan
+        self.out_design = BaseValue(value=self.xp.asarray(self._design, dtype=self.dtype),
+                                    target_device_idx=target_device_idx, precision=precision)
+        self.outputs['out_design'] = self.out_design
+
+    @staticmethod
+    def _per_mode(value, n, name):
+        arr = np.atleast_1d(np.asarray(value, dtype=float))
+        if arr.size == 1:
+            return np.full(n, arr[0])
+        if arr.size != n:
+            raise ValueError(f"{name} must be a scalar or have {n} elements, got {arr.size}")
+        return arr
+
+    @classmethod
+    def output_names(cls):
+        result = super().output_names()
+        result.update({'out_dither': OutputDesc(BaseValue, 'Dither added to the commands of the LQG modes'),
+                       'out_design': OutputDesc(BaseValue, 'Design state per LQG mode: DESIGN_COLUMNS, '
+                                                           'then the implied plant taps')})
+        return result
+
+    def trigger_code(self):
+        y = cpuArray(self.delta_comm).astype(float)
+        gain_mod = cpuArray(self._gain_mod).astype(float)
+        mask = self._int_mask
+        self._u[mask] = self.int_ff[mask] * self._u[mask] + self.int_gain[mask] * gain_mod[mask] * y[mask]
+        dither = np.zeros(self.n_modes)
+        self._u[self.lqg_modes], dither[self.lqg_modes] = self.ctrl.step(y[self.lqg_modes])
+        self._new_events()
+
+        self.output_buffer[:, 0] = self.to_xp(self._u, dtype=self.dtype)
+        self.out_dither.value[:] = self.to_xp(dither, dtype=self.dtype)
+        self.out_dither.generation_time = self.current_time
+        self.out_design.value = self.to_xp(self._design, dtype=self.dtype)
+        self.out_design.generation_time = self.current_time
+
+    def _new_events(self):
+        new = self.ctrl.log[self._n_events:]
+        if not new:
+            return
+        self._n_events = len(self.ctrl.log)
+        for k, event, info in new:
+            col = self._EVENT_COLUMN.get(event)
+            if col is not None:
+                self._design[:, col] += 1
+            brief = {key: (round(v, 4) if isinstance(v, float) else v) for key, v in info.items()
+                     if key in ('pred_std', 's', 'rho', 'eps', 'reason', 'trial_rms_ratio', 'after',
+                                'roots_stabilized', 'to')}
+            self.logger.info(f"FreeThetaLqg {self.ctrl.name} frame {k}: {event} {brief}")
+        d = self.ctrl.design
+        n_cols = len(self.DESIGN_COLUMNS)
+        if d is None:
+            self._design[:, 0] = 0.0
+            self._design[:, 1:5] = np.nan
+            self._design[:, n_cols:] = np.nan
+        else:
+            self._design[:, 0] = 1.0
+            self._design[:, 1:5] = d.predicted_output_std(), d.s, d.rho, d.eps
+            self._design[:, n_cols:] = d.g
+
+    def reset_states(self):
+        super().reset_states()
+        self._u[:] = 0
+
+    def finalize(self):
+        super().finalize()
+        if self.log_file is None:
+            return
+        events = {self.ctrl.name: [dict(frame=k, event=e, **info) for k, e, info in self.ctrl.log]}
+        os.makedirs(os.path.dirname(os.path.abspath(self.log_file)), exist_ok=True)
+        with open(self.log_file, 'w') as f:
+            json.dump(events, f, indent=1, default=float)

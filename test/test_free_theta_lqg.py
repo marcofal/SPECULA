@@ -9,6 +9,7 @@ from specula import cpuArray
 from specula.base_value import BaseValue
 from specula.data_objects.simul_params import SimulParams
 from specula.lib import adaptive_lqg_mimo as am
+from specula.processing_objects.data_driven_lqg import DataDrivenLqg
 from specula.processing_objects.free_theta_lqg import FreeThetaLqg
 from specula.processing_objects.integrator import Integrator
 
@@ -48,8 +49,7 @@ class TestFreeThetaLqg(unittest.TestCase):
         sp = SimulParams(time_step=0.001)
         obj = FreeThetaLqg(sp, n_modes=6, lqg_modes=[0, 1, 2], train_s=2.0, redesign_s=0.5,
                            dither_std=3.0, target_device_idx=-1)
-        self.assertEqual(obj.method, 'mimo_free_theta')
-        c = obj.mode_ctrl[0]
+        c = obj.ctrl
         self.assertIsInstance(c, am.AdaptiveMimoFreeTheta)
         self.assertEqual((c.m, c.N, c.structure), (3, 11, 'full'))
         self.assertEqual((c.min_samples, c.redesign_every, c.rls.window), (2000, 500, 2000))
@@ -59,8 +59,8 @@ class TestFreeThetaLqg(unittest.TestCase):
         self.assertIsNone(c.Lam)                                   # time-shift register
         f = FreeThetaLqg(sp, n_modes=6, lqg_modes=[0, 1], poles=[0, 0, 0.5, 0.5], train_s=1.0,
                          target_device_idx=-1)
-        self.assertEqual(f.mode_ctrl[0].N, 4)
-        self.assertIsNotNone(f.mode_ctrl[0].Lam)
+        self.assertEqual(f.ctrl.N, 4)
+        self.assertIsNotNone(f.ctrl.Lam)
         with self.assertRaises(ValueError):
             FreeThetaLqg(sp, n_modes=6, structure='diag', target_device_idx=-1)
         with self.assertRaises(ValueError):
@@ -84,11 +84,38 @@ class TestFreeThetaLqg(unittest.TestCase):
                                dither_std=2.0, target_device_idx=-1)
             comm = loop(obj, d, M)
             np.testing.assert_allclose(comm[:, 2], comm_ref[:, 2], rtol=1e-4, atol=1e-3)
-            ctrl = obj.mode_ctrl[0]
+            ctrl = obj.ctrl
             self.assertTrue([1 for _, e, _ in ctrl.log if e == 'accepted'], f"{poles}: {ctrl.log}")
             res = d[1:, :2] - (M @ comm[:-1].T).T[:, :2]
             self.assertLess(np.sqrt(np.mean(res[-2000:] ** 2)), np.sqrt(np.mean(res_int[-2000:] ** 2)),
                             str(poles))
+
+            design = cpuArray(obj.outputs['out_design'].value)
+            cols = FreeThetaLqg.DESIGN_COLUMNS
+            self.assertEqual(design.shape, (2, len(cols) + 3))
+            np.testing.assert_array_equal(design[:, cols.index('active')], 1.0 if ctrl.design else 0.0)
+            n_acc = sum(e == 'accepted' for _, e, _ in ctrl.log)
+            np.testing.assert_array_equal(design[:, cols.index('n_accepted')], n_acc)
+            if ctrl.design is not None:
+                np.testing.assert_allclose(design[:, len(cols):], ctrl.design.g, atol=1e-4)
+
+    def test_same_commands_as_data_driven_lqg(self):
+        """The standalone object runs the algorithm of DataDrivenLqg 'mimo_free_theta'
+        with the same seeding: identical commands."""
+        sp = SimulParams(time_step=0.001)
+        T = 3000
+        d = np.column_stack([ar2(T, s) for s in (1, 2, 3)])
+        obj = FreeThetaLqg(sp, n_modes=3, lqg_modes=[0, 1], n_theta=5, int_gain=0.4, int_ff=0.95,
+                           train_s=1.0, redesign_s=0.25, dither_std=2.0, target_device_idx=-1)
+        ref = DataDrivenLqg(sp, n_modes=3, lqg_modes=[0, 1], method='mimo_free_theta', n_theta=5,
+                            int_gain=0.4, int_ff=0.95, plant_window=1000, min_samples=1000,
+                            redesign_every=250, dither_std=2.0, dither_after=2.0, theta_refit_u=True,
+                            rho_grid=[0.0, 0.1, 0.3, 1.0, 10.0], eps_grid=[0.0, 0.1], delay=1,
+                            target_device_idx=-1)
+        comm = loop(obj, d)
+        comm_ref = loop(ref, d)
+        self.assertTrue([1 for _, e, _ in obj.ctrl.log if e == 'accepted'])
+        np.testing.assert_allclose(comm, comm_ref, rtol=1e-5, atol=1e-4)
 
 
 if __name__ == "__main__":
