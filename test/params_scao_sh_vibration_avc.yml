@@ -1,0 +1,56 @@
+---
+# Override of params_scao_sh_test.yml + params_scao_sh_vibration.yml: adds
+# an AVC on the vibrating mode (tip), in parallel with the main integrator.
+# Its command is summed to the integrator one before the DM.
+
+main_override:
+  total_time:        3.000                   # [s] matches params_scao_sh_vibration.yml override
+
+mode_slicer:
+  class:             'BaseSlicer'
+  indices:           0                        # mode 0 = tip, same as vib_dm's idx_modes
+  inputs:
+    in_value: 'rec.out_modes'
+  outputs: ['out_value']
+
+avc:
+  class:             'AVC'
+  simul_params_ref:  'main'
+  n_avc:             1
+  freq:              [46.5]                   # [Hz] initial frequency guess (intentionally off)
+  gx:                3.0
+  gomega:            0.5
+  k:                 1.0
+  plant_gain:        0.80                     # closed-loop plant at 47 Hz
+  plant_phase:       255.0                    # [deg]
+  inputs:
+    in_measurement: 'mode_slicer.out_value'
+  outputs: ['out_comm', 'out_freq']
+
+avc_inserter:
+  class:             'BaseInserter'
+  output_size:        40                      # must match dm/control nmodes
+  slice_args:        [[0, 1], [0, 1]]          # insert avc.out_comm[0:1] into mode 0
+  inputs:
+    in_value: 'avc.out_comm'
+  outputs: ['out_value']
+
+comm_combiner:
+  class:             'BaseOperation'
+  sum:               True
+  inputs:
+    in_value1: 'control.out_comm'
+    in_value2: 'avc_inserter.out_value'
+  outputs: ['out_value']
+
+dm_override:
+  inputs:
+    in_command: 'comm_combiner.out_value'
+
+data_store_override:
+  inputs:
+    input_list: ['res_sr-psf.out_sr',
+                 'res_modes-rec.out_modes',
+                 'res_comm-control.out_comm',
+                 'avc_freq-avc.out_freq',
+                 'avc_comm-avc.out_comm']

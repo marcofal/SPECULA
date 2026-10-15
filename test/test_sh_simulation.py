@@ -111,6 +111,29 @@ class TestShSimulation(unittest.TestCase):
         simul.run()
         self._assert_results()
 
+    def test_sh_simulation_vibration_avc(self):
+        """Run the simulation with a 47 Hz tip vibration and an AVC,
+        and check that the vibration is cancelled"""
+
+        # Change to test directory
+        os.chdir(os.path.dirname(__file__))
+
+        yml_files = ['params_scao_sh_test.yml',
+                     'params_scao_sh_vibration.yml',
+                     'params_scao_sh_vibration_avc.yml']
+        simul = Simul(*yml_files, overrides='{main.total_time: 1.5}')
+        simul.run()
+
+        latest_data_dir = sorted(glob.glob(os.path.join(self.datadir, '2*')))[-1]
+        tip = fits.getdata(os.path.join(latest_data_dir, 'res_modes.fits'))[:, 0]
+        freq = fits.getdata(os.path.join(latest_data_dir, 'avc_freq.fits')).ravel()
+
+        self.assertEqual(len(tip), 1500)
+        # Residual tip: much smaller at the end than at the beginning
+        self.assertLess(tip[-300:].std(), 0.4 * tip[:300].std())
+        # Frequency estimate pulled from the 46.5 Hz guess to the true 47 Hz
+        self.assertAlmostEqual(float(freq[-1]), 47.0, delta=0.2)
+
     def _assert_results(self):
         # Find the most recent data directory (with timestamp)
         data_dirs = sorted(glob.glob(os.path.join(self.datadir, '2*')))
